@@ -1,0 +1,85 @@
+{
+  "name": "moores-bodyshop-payroll",
+  "productName": "Moore's Body Shop",
+  "version": "1.0.2",
+  "description": "Payroll for Moore's Body Shop — employees, time clocks, weekly pay, and history.",
+  "author": "Moore's Body Shop",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "postinstall": "node node_modules/electron/install.js",
+    "dist": "electron-builder --win nsis portable --publish never",
+    "release": "node scripts/release.js"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.9"
+  },
+  "devDependencies": {
+    "electron": "44.1.1",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.mooresbodyshop.payroll",
+    "productName": "Moore's Body Shop",
+    "copyright": "Copyright © Moore's Body Shop",
+    "asar": true,
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "scra976",
+        "repo": "moores-bodyshop-payroll",
+        "releaseType": "release",
+        "vPrefixedTagName": true
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "publish": [
+        {
+          "provider": "github",
+          "owner": "scra976",
+          "repo": "moores-bodyshop-payroll",
+          "releaseType": "release",
+          "vPrefixedTagName": true
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Moore's Body Shop Payroll",
+      "uninstallDisplayName": "Moore's Body Shop Payroll",
+      "artifactName": "MooresBodyShop-Payroll-Setup-${version}.exe",
+      "include": "installer.nsh"
+    },
+    "portable": {
+      "artifactName": "MooresBodyShop-Payroll-Portable-${version}.exe"
+    }
+  }
+}
