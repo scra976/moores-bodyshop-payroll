@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('mooresPayroll', {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   saveSettings: (patch) => ipcRenderer.invoke('settings:save', patch),
   openDataFolder: () => ipcRenderer.invoke('data:openFolder'),
+  openPub15t: () => ipcRenderer.invoke('app:openPub15t'),
   exportEncrypted: () => ipcRenderer.invoke('data:exportEncrypted'),
   exportDecrypted: () => ipcRenderer.invoke('data:exportDecrypted'),
   importBackup: (mode) => ipcRenderer.invoke('data:import', mode),

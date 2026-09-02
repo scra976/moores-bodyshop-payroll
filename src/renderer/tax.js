@@ -1,15 +1,20 @@
 'use strict';
 
 /**
- * Federal FIT: IRS Pub 15-T (For use in 2026) Worksheet 1A,
- * Percentage Method Tables for Automated Payroll Systems,
- * Form W-4 (2020 or later).
- * Virginia remains a separate state estimate.
+ * Federal FIT: IRS Pub 15-T (For use in 2026) Worksheet 1A.
+ * Virginia: Employer Withholding Instructions (wages after July 1, 2025) —
+ * T = (G × P) − [8750 + (E1 × 930) + (E2 × 800)], then 2/3/5/5.75% brackets.
+ * FICA: SS 6.2% up to $184,500 YTD; Medicare 1.45%; Additional Medicare 0.9% over $200,000 YTD.
  */
 (function (root) {
   const SS_RATE = 0.062;
-  const SS_WAGE_BASE = 176100;
+  const SS_WAGE_BASE = 184500;
   const MEDICARE_RATE = 0.0145;
+  const ADD_MEDICARE_RATE = 0.009;
+  const ADD_MEDICARE_THRESHOLD = 200000;
+  const VA_STD_DED = 8750;
+  const VA_E1 = 930;
+  const VA_E2 = 800;
 
   const PERIODS = {
     weekly: 52,
@@ -21,8 +26,6 @@
   const W4_STD_MFJ = 12900;
   const W4_STD_OTHER = 8600;
 
-  // Pub 15-T 2026 Annual Percentage Method tables.
-  // Columns: atLeast, lessThan, baseTax, rate, exceeds
   const P15T_STANDARD = {
     single: [
       { atLeast: 0, lessThan: 7500, base: 0, rate: 0, exceeds: 0 },
@@ -92,13 +95,13 @@
   function round2(n) {
     const x = Number(n);
     if (!Number.isFinite(x)) return 0;
-    return Math.round((x + Number.EPSILON) * 100) / 100;
+    return Math.round(x * 100 + 1e-8) / 100;
   }
 
   function roundHours(n) {
     const x = Number(n);
     if (!Number.isFinite(x)) return 0;
-    return Math.round((x + Number.EPSILON) * 100) / 100;
+    return Math.round(x * 100 + 1e-8) / 100;
   }
 
   function periodsPerYear(freq) {
@@ -123,11 +126,6 @@
     return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
   }
 
-  /**
-   * Weekly pay period: Wednesday through Tuesday.
-   * Payday is the Wednesday after that Tuesday.
-   * `periodEndIso` is the Tuesday that ends the period (or any date in/near it).
-   */
   function payPeriodFromDate(isoOrDate) {
     let d;
     if (isoOrDate instanceof Date) d = new Date(isoOrDate.getFullYear(), isoOrDate.getMonth(), isoOrDate.getDate());
@@ -164,24 +162,6 @@
     return endIso || startIso;
   }
 
-  function virginiaAnnualTax(annual) {
-    let remaining = Math.max(0, Number(annual) || 0);
-    let tax = 0;
-    const bands = [
-      { size: 3000, rate: 0.02 },
-      { size: 2000, rate: 0.03 },
-      { size: 12000, rate: 0.05 },
-      { size: Infinity, rate: 0.0575 }
-    ];
-    for (const band of bands) {
-      const slice = Math.min(remaining, band.size);
-      tax += slice * band.rate;
-      remaining -= slice;
-      if (remaining <= 0) break;
-    }
-    return tax;
-  }
-
   function hourlyRate(employee) {
     const rate = Number(employee && employee.rate) || 0;
     if (employee && employee.payType === 'salary') {
@@ -202,9 +182,57 @@
     return roundHours((end - start) / 60);
   }
 
+  function rowHours(punch) {
+    if (!punch) return 0;
+    const kind = punch.payType || 'regular';
+    if (kind === 'vacation' || kind === 'holiday') {
+      if (punch.hours !== '' && punch.hours != null) return roundHours(punch.hours);
+    }
+    const fromClock = punchHours(punch.clockIn, punch.clockOut);
+    if (fromClock) return fromClock;
+    return roundHours(punch.hours);
+  }
+
+  function hoursBreakdown(punchesOrHours) {
+    if (typeof punchesOrHours === 'number') {
+      const h = roundHours(Math.max(0, punchesOrHours));
+      return { regularHours: h, vacationHours: 0, holidayHours: 0, totalHours: h };
+    }
+    if (punchesOrHours && !Array.isArray(punchesOrHours) && typeof punchesOrHours === 'object') {
+      const regularHours = roundHours(punchesOrHours.regularHours || 0);
+      const vacationHours = roundHours(punchesOrHours.vacationHours || 0);
+      const holidayHours = roundHours(punchesOrHours.holidayHours || 0);
+      return {
+        regularHours,
+        vacationHours,
+        holidayHours,
+        totalHours: roundHours(regularHours + vacationHours + holidayHours)
+      };
+    }
+    const punches = Array.isArray(punchesOrHours) ? punchesOrHours : [];
+    let regularHours = 0;
+    let vacationHours = 0;
+    let holidayHours = 0;
+    for (const p of punches) {
+      const h = rowHours(p);
+      const kind = p.payType || 'regular';
+      if (kind === 'vacation') vacationHours += h;
+      else if (kind === 'holiday') holidayHours += h;
+      else regularHours += h;
+    }
+    regularHours = roundHours(regularHours);
+    vacationHours = roundHours(vacationHours);
+    holidayHours = roundHours(holidayHours);
+    return {
+      regularHours,
+      vacationHours,
+      holidayHours,
+      totalHours: roundHours(regularHours + vacationHours + holidayHours)
+    };
+  }
+
   function totalPunchHours(punches) {
-    if (!Array.isArray(punches)) return 0;
-    return roundHours(punches.reduce((sum, p) => sum + punchHours(p.clockIn, p.clockOut), 0));
+    return hoursBreakdown(punches).totalHours;
   }
 
   function filingKey(employee) {
@@ -227,10 +255,6 @@
     return row.base + excess * row.rate;
   }
 
-  /**
-   * Pub 15-T Worksheet 1A (2026) for Form W-4 2020 or later.
-   * Returns federal income tax to withhold this pay period.
-   */
   function federalPub15T(employee, taxableWages, ppy) {
     const line1a = Math.max(0, Number(taxableWages) || 0);
     const line1b = ppy || 52;
@@ -257,38 +281,65 @@
     return round2(line3c + line4a);
   }
 
-  function computePay(employee, totalHours) {
-    const hours = Math.max(0, Number(totalHours) || 0);
+  function virginiaWithholding(employee, taxableWages, ppy) {
+    if (employee && (employee.vaWithhold === false || employee.vaWithhold === 'exempt')) return 0;
+    const g = Math.max(0, Number(taxableWages) || 0);
+    const periods = ppy || 52;
+    const e1 = Math.max(0, Number(employee && employee.vaE1) || 0);
+    const e2 = Math.max(0, Number(employee && employee.vaE2) || 0);
+    const T = g * periods - (VA_STD_DED + e1 * VA_E1 + e2 * VA_E2);
+    if (T <= 0) return 0;
+    let W = 0;
+    if (T <= 3000) W = 0.02 * T;
+    else if (T <= 5000) W = 60 + 0.03 * (T - 3000);
+    else if (T <= 17000) W = 120 + 0.05 * (T - 5000);
+    else W = 720 + 0.0575 * (T - 17000);
+    W = W / periods + (Number(employee && employee.extraState) || 0);
+    return round2(Math.max(0, W));
+  }
+
+  function cappedPeriodTax(ytdBefore, thisWages, rate, cap) {
+    const prev = Math.min(Math.max(0, ytdBefore), cap);
+    const next = Math.min(Math.max(0, ytdBefore) + Math.max(0, thisWages), cap);
+    return round2(next * rate - prev * rate);
+  }
+
+  function additionalMedicare(ytdBefore, thisWages) {
+    const prev = Math.max(0, ytdBefore - ADD_MEDICARE_THRESHOLD);
+    const next = Math.max(0, ytdBefore + thisWages - ADD_MEDICARE_THRESHOLD);
+    return round2(next * ADD_MEDICARE_RATE - prev * ADD_MEDICARE_RATE);
+  }
+
+  function computePay(employee, punchesOrHours, opts) {
+    const breakdown = hoursBreakdown(punchesOrHours);
+    const hours = breakdown.totalHours;
     const ppy = periodsPerYear(employee && employee.payFrequency);
     const hourly = hourlyRate(employee);
-    const regularHours = roundHours(Math.min(40, hours));
     const otHours = roundHours(Math.max(0, hours - 40));
-    const gross = round2(regularHours * hourly + otHours * hourly * 1.5);
+    const straightHours = roundHours(Math.min(40, hours));
+    const gross = round2(straightHours * hourly + otHours * hourly * 1.5);
     const pretax = round2(Math.max(0, Number(employee && employee.preTaxDeduction) || 0));
     const taxable = round2(Math.max(0, gross - pretax));
+    const ytdGross = round2((opts && opts.ytdGross) || 0);
 
-    const ssWages = Math.min(gross, SS_WAGE_BASE / ppy);
-    const ss = round2(SS_RATE * Math.max(0, ssWages));
-    const medicare = round2(MEDICARE_RATE * gross);
+    const ssWages = Math.min(gross, Math.max(0, SS_WAGE_BASE - ytdGross));
+    const ss = round2(ssWages * SS_RATE);
+    const medicareBase = round2(gross * MEDICARE_RATE);
+    const addMed = additionalMedicare(ytdGross, gross);
+    const medicare = round2(medicareBase + addMed);
 
     const federal = federalPub15T(employee, taxable, ppy);
-
-    let state = 0;
-    const withholdVa = employee && employee.vaWithhold !== false && employee.vaWithhold !== 'exempt';
-    if (withholdVa) {
-      const annualTaxable = taxable * ppy;
-      state = virginiaAnnualTax(annualTaxable) / ppy;
-      state += Number(employee && employee.extraState) || 0;
-      state = round2(Math.max(0, state));
-    }
-
+    const state = virginiaWithholding(employee, taxable, ppy);
     const net = round2(gross - pretax - federal - ss - medicare - state);
     const totalTaxes = round2(federal + ss + medicare + state);
 
     return {
       hourly: round2(hourly),
-      totalHours: roundHours(hours),
-      regularHours,
+      totalHours: hours,
+      regularHours: breakdown.regularHours,
+      vacationHours: breakdown.vacationHours,
+      holidayHours: breakdown.holidayHours,
+      straightHours,
       otHours,
       gross,
       pretax,
@@ -296,10 +347,12 @@
       federal,
       ss,
       medicare,
+      additionalMedicare: addMed,
       state,
       totalTaxes,
       net,
-      periodsPerYear: ppy
+      periodsPerYear: ppy,
+      ytdGross: round2(ytdGross + gross)
     };
   }
 
@@ -307,6 +360,11 @@
     SS_RATE,
     SS_WAGE_BASE,
     MEDICARE_RATE,
+    ADD_MEDICARE_RATE,
+    ADD_MEDICARE_THRESHOLD,
+    VA_STD_DED,
+    VA_E1,
+    VA_E2,
     PERIODS,
     W4_STD_MFJ,
     W4_STD_OTHER,
@@ -315,8 +373,11 @@
     periodsPerYear,
     hourlyRate,
     punchHours,
+    rowHours,
+    hoursBreakdown,
     totalPunchHours,
     federalPub15T,
+    virginiaWithholding,
     computePay,
     payPeriodFromDate,
     currentPayPeriod,

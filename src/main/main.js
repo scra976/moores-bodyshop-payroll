@@ -84,6 +84,14 @@ function registerIpc() {
     return { ok: !result, message: result || null };
   });
 
+  ipcMain.handle('app:openPub15t', async () => {
+    const pdf = isPackaged()
+      ? path.join(process.resourcesPath, 'p15t.pdf')
+      : path.join(__dirname, '../../docs/p15t.pdf');
+    const result = await shell.openPath(pdf);
+    return { ok: !result, message: result || null };
+  });
+
   ipcMain.handle('data:exportEncrypted', async () => {
     const win = BrowserWindow.getFocusedWindow() || mainWindow;
     const stamp = new Date().toISOString().slice(0, 10);

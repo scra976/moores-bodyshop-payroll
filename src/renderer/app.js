@@ -148,6 +148,33 @@ function payweekPeriodLabel(w) {
   return w && w.weekEnding ? w.weekEnding : '';
 }
 
+function hoursCell(w) {
+  const parts = [];
+  const reg = Number(w.regularHours);
+  const vac = Number(w.vacationHours);
+  const hol = Number(w.holidayHours);
+  const ot = Number(w.otHours);
+  if (reg) parts.push(hoursFmt(reg));
+  if (vac) parts.push(`${hoursFmt(vac)} vac`);
+  if (hol) parts.push(`${hoursFmt(hol)} holiday`);
+  if (ot) parts.push(`${hoursFmt(ot)} OT`);
+  if (parts.length) return parts.join(' + ');
+  return hoursFmt(w.hours);
+}
+
+function ytdGrossBefore(emp, paydayIso, excludePeriodEnd) {
+  const year = String(paydayIso || '').slice(0, 4);
+  let sum = 0;
+  for (const w of emp.payweeks || []) {
+    if (excludePeriodEnd && payweekPeriodEnd(w) === excludePeriodEnd) continue;
+    const pd = payweekPayday(w);
+    if (!pd || pd.slice(0, 4) !== year) continue;
+    if (paydayIso && pd >= paydayIso) continue;
+    sum += Number(w.gross) || 0;
+  }
+  return tax.round2(sum);
+}
+
 function uid(prefix) {
   if (crypto.randomUUID) return `${prefix}-${crypto.randomUUID()}`;
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -191,6 +218,8 @@ function emptyEmployee() {
     preTaxDeduction: 0,
     w4OtherIncome: 0,
     w4Deductions: 0,
+    vaE1: 0,
+    vaE2: 0,
     paymentMethod: 'check',
     accountLast4: '',
     payweeks: []
@@ -420,25 +449,31 @@ function renderEmployees() {
   }
 
   const payweeks = [...(emp.payweeks || [])].sort((a, b) =>
-    String(payweekPeriodEnd(b)).localeCompare(String(payweekPeriodEnd(a)))
+    String(payweekPayday(a) || payweekPeriodEnd(a)).localeCompare(String(payweekPayday(b) || payweekPeriodEnd(b)))
   );
+  let ytdGross = 0;
+  let ytdNet = 0;
   const payweekRows = payweeks.length
     ? payweeks
-        .map(
-          (w) => `<tr>
+        .map((w) => {
+          ytdGross = tax.round2(ytdGross + (Number(w.gross) || 0));
+          ytdNet = tax.round2(ytdNet + (Number(w.net) || 0));
+          return `<tr>
             <td>${esc(payweekPeriodLabel(w))}</td>
             <td>${esc(payweekPayday(w) || '—')}</td>
-            <td class="num">${hoursFmt(w.hours)}</td>
+            <td class="num">${esc(hoursCell(w))}</td>
             <td class="num">${money(w.gross)}</td>
             <td class="num">${money(w.federal)}</td>
             <td class="num">${money(w.ss)}</td>
             <td class="num">${money(w.medicare)}</td>
             <td class="num">${money(w.state)}</td>
             <td class="num">${money(w.net)}</td>
-          </tr>`
-        )
+            <td class="num">${money(ytdGross)}</td>
+            <td class="num">${money(ytdNet)}</td>
+          </tr>`;
+        })
         .join('')
-    : `<tr><td colspan="9" class="muted">No payweeks transferred yet.</td></tr>`;
+    : `<tr><td colspan="11" class="muted">No payweeks transferred yet.</td></tr>`;
 
   const statusBadge =
     emp.status === 'Archived'
@@ -554,8 +589,14 @@ function renderEmployees() {
         <div class="field"><label>W-4 Step 4(b) deductions (annual)</label>
           <input id="f-w4deductions" type="number" min="0" step="0.01" value="${esc(emp.w4Deductions || 0)}" />
         </div>
+        <div class="field"><label>VA-4 personal exemptions (E1)</label>
+          <input id="f-vaE1" type="number" min="0" step="1" value="${esc(emp.vaE1 || 0)}" />
+        </div>
+        <div class="field"><label>VA-4 age/blind exemptions (E2)</label>
+          <input id="f-vaE2" type="number" min="0" step="1" value="${esc(emp.vaE2 || 0)}" />
+        </div>
       </div>
-      <p class="disclaimer">Federal withholding per IRS Pub 15-T percentage method. Multiple jobs uses the Step 2 checkbox table.</p>
+      <p class="disclaimer">Federal withholding per IRS Pub 15-T (2026) percentage method, Worksheet 1A. Multiple jobs uses the Step 2 checkbox table. Virginia uses the employer formula after the $8,750 standard deduction. No local VA tax. No employee VA UI.</p>
     </div>
 
     <div class="card">
@@ -590,17 +631,19 @@ function renderEmployees() {
               <th>Payday</th>
               <th class="num">Hours</th>
               <th class="num">Gross</th>
-              <th class="num">Fed</th>
+              <th class="num">FIT</th>
               <th class="num">SS</th>
               <th class="num">Med</th>
-              <th class="num">State</th>
+              <th class="num">VA</th>
               <th class="num">Net</th>
+              <th class="num">YTD gross</th>
+              <th class="num">YTD net</th>
             </tr>
           </thead>
           <tbody>${payweekRows}</tbody>
         </table>
       </div>
-      <p class="disclaimer">Federal withholding per IRS Pub 15-T percentage method. Virginia is a separate state estimate, not a substitute for official VA tables. Historical rows are not recalculated unless you transfer that period again.</p>
+      <p class="disclaimer">Federal withholding per IRS Pub 15-T (2026) Worksheet 1A. Virginia formula after the $8,750 standard deduction. Historical rows are not recalculated unless you transfer that period again.</p>
     </div>`;
 }
 
@@ -673,6 +716,8 @@ function bindEmployees() {
     ['f-pretax', (v) => (emp.preTaxDeduction = Number(v) || 0)],
     ['f-w4other', (v) => (emp.w4OtherIncome = Number(v) || 0)],
     ['f-w4deductions', (v) => (emp.w4Deductions = Number(v) || 0)],
+    ['f-vaE1', (v) => (emp.vaE1 = Number(v) || 0)],
+    ['f-vaE2', (v) => (emp.vaE2 = Number(v) || 0)],
     ['f-accountLast4', (v) => (emp.accountLast4 = digits(v).slice(0, 4))]
   ];
 
@@ -898,13 +943,45 @@ function bindAdd() {
   });
 }
 
-function emptyPunch(periodStart) {
+function emptyPunch(periodStart, payType) {
+  const kind = payType || 'regular';
   return {
     id: uid('punch'),
     date: periodStart || todayISO(),
-    clockIn: '08:00',
-    clockOut: '17:00'
+    clockIn: kind === 'regular' ? '08:00' : '',
+    clockOut: kind === 'regular' ? '17:00' : '',
+    hours: kind === 'regular' ? '' : '8.00',
+    payType: kind
   };
+}
+
+function payStatsHtml(calc) {
+  if (!calc) return '<p class="muted">Select an employee to estimate pay.</p>';
+  const bits = [];
+  if (calc.pay.vacationHours) bits.push(`${hoursFmt(calc.pay.vacationHours)} vac`);
+  if (calc.pay.holidayHours) bits.push(`${hoursFmt(calc.pay.holidayHours)} holiday`);
+  return `
+      <div class="stats">
+        <div class="stat"><div class="k">Straight</div><div class="v">${hoursFmt(calc.pay.straightHours)} h</div></div>
+        <div class="stat"><div class="k">Overtime</div><div class="v">${hoursFmt(calc.pay.otHours)} h</div></div>
+        <div class="stat"><div class="k">Gross</div><div class="v">${money(calc.pay.gross)}</div></div>
+        <div class="stat"><div class="k">Taxes</div><div class="v neg">${money(calc.pay.totalTaxes)}</div></div>
+        <div class="stat"><div class="k">Net</div><div class="v pos">${money(calc.pay.net)}</div></div>
+      </div>
+      ${bits.length ? `<p class="hint">${esc(bits.join(' · '))}</p>` : ''}
+      <div class="table-wrap">
+        <table class="data">
+          <thead><tr><th>FIT</th><th>SS</th><th>Med</th><th>VA</th><th>Pre-tax</th><th>Hourly</th></tr></thead>
+          <tbody><tr>
+            <td>${money(calc.pay.federal)}</td>
+            <td>${money(calc.pay.ss)}</td>
+            <td>${money(calc.pay.medicare)}</td>
+            <td>${money(calc.pay.state)}</td>
+            <td>${money(calc.pay.pretax)}</td>
+            <td>${money(calc.pay.hourly)}</td>
+          </tr></tbody>
+        </table>
+      </div>`;
 }
 
 function findPayweek(emp, periodEnd) {
@@ -942,8 +1019,10 @@ function ensureTimeDefaults() {
 function currentTimePay() {
   const emp = findEmployee(state.time.employeeId);
   if (!emp || isArchived(emp)) return null;
-  const hours = tax.totalPunchHours(state.time.punches);
-  return { emp, hours, pay: tax.computePay(emp, hours) };
+  const period = periodFromEnd(state.time.periodEnd);
+  const ytd = ytdGrossBefore(emp, period.payday, period.periodEnd);
+  const pay = tax.computePay(emp, state.time.punches, { ytdGross: ytd });
+  return { emp, hours: pay.totalHours, pay };
 }
 
 function renderTimeclocks() {
@@ -953,43 +1032,29 @@ function renderTimeclocks() {
   const archivedSelected = isArchived(emp);
   const calc = !archivedSelected ? currentTimePay() : null;
   const punchRows = state.time.punches
-    .map((p, idx) => {
-      const hrs = tax.punchHours(p.clockIn, p.clockOut);
+    .map((p) => {
+      const kind = p.payType || 'regular';
+      const hrs = tax.rowHours(p);
+      const hourField =
+        kind === 'regular'
+          ? `<span class="hours-cell">${hoursFmt(hrs)}</span>`
+          : `<input type="number" min="0" step="0.01" data-punch-field="hours" value="${esc(p.hours != null && p.hours !== '' ? p.hours : hrs)}" />`;
+      const clocks =
+        kind === 'regular'
+          ? `<td><input type="time" data-punch-field="clockIn" value="${esc(p.clockIn || '')}" /></td>
+        <td><input type="time" data-punch-field="clockOut" value="${esc(p.clockOut || '')}" /></td>`
+          : `<td colspan="2" class="muted">Paid hours at hourly rate</td>`;
       return `<tr data-punch="${esc(p.id)}">
+        <td><select data-punch-field="payType">${optionList(['regular','vacation','holiday'], kind, { regular: 'Regular', vacation: 'Vacation', holiday: 'Holiday' })}</select></td>
         <td><input type="date" data-punch-field="date" value="${esc(p.date || '')}" /></td>
-        <td><input type="time" data-punch-field="clockIn" value="${esc(p.clockIn || '')}" /></td>
-        <td><input type="time" data-punch-field="clockOut" value="${esc(p.clockOut || '')}" /></td>
-        <td class="num mono hours-cell">${hoursFmt(hrs)}</td>
+        ${clocks}
+        <td class="num mono hours-cell">${hourField}</td>
         <td><button type="button" class="icon-btn" data-del-punch="${esc(p.id)}" title="Delete row">✕</button></td>
       </tr>`;
     })
     .join('');
 
-  const stats = calc
-    ? `
-      <div id="tc-stats">
-      <div class="stats">
-        <div class="stat"><div class="k">Regular</div><div class="v">${hoursFmt(calc.pay.regularHours)} h</div></div>
-        <div class="stat"><div class="k">Overtime</div><div class="v">${hoursFmt(calc.pay.otHours)} h</div></div>
-        <div class="stat"><div class="k">Gross</div><div class="v">${money(calc.pay.gross)}</div></div>
-        <div class="stat"><div class="k">Est. taxes</div><div class="v neg">${money(calc.pay.totalTaxes)}</div></div>
-        <div class="stat"><div class="k">Est. net</div><div class="v pos">${money(calc.pay.net)}</div></div>
-      </div>
-      <div class="table-wrap">
-        <table class="data">
-          <thead><tr><th>Federal</th><th>Social Security</th><th>Medicare</th><th>Virginia</th><th>Pre-tax</th><th>Hourly used</th></tr></thead>
-          <tbody><tr>
-            <td>${money(calc.pay.federal)}</td>
-            <td>${money(calc.pay.ss)}</td>
-            <td>${money(calc.pay.medicare)}</td>
-            <td>${money(calc.pay.state)}</td>
-            <td>${money(calc.pay.pretax)}</td>
-            <td>${money(calc.pay.hourly)}</td>
-          </tr></tbody>
-        </table>
-      </div>
-      </div>`
-    : `<div id="tc-stats"><p class="muted">Select an employee to estimate pay.</p></div>`;
+  const stats = `<div id="tc-stats">${payStatsHtml(calc)}</div>`;
 
   return `
     <div class="card">
@@ -1014,20 +1079,20 @@ function renderTimeclocks() {
         <h2>Punches</h2>
         <button class="btn btn-secondary btn-sm" id="tc-add-row">Add row</button>
       </div>
-      <p class="hint">Overnight punches that clock out before they clock in wrap past midnight. Regular hours are capped at 40 in this Wed–Tue window; overtime pays at 1.5×.</p>
+      <p class="hint">Regular, vacation, and holiday are all paid at the hourly rate and count toward the 40-hour Wed–Tue window. Overtime is 1.5×. Overnight punches wrap past midnight.</p>
       <div class="table-wrap">
         <table class="data">
           <thead>
-            <tr><th>Date</th><th>Clock in</th><th>Clock out</th><th class="num">Hours</th><th></th></tr>
+            <tr><th>Type</th><th>Date</th><th>Clock in</th><th>Clock out</th><th class="num">Hours</th><th></th></tr>
           </thead>
-          <tbody>${punchRows || '<tr><td colspan="5" class="muted">No punches</td></tr>'}</tbody>
+          <tbody>${punchRows || '<tr><td colspan="6" class="muted">No punches</td></tr>'}</tbody>
         </table>
       </div>
     </div>
     <div class="card">
       <div class="section-title">Estimated pay</div>
       ${stats}
-      <p class="disclaimer">Federal withholding per IRS Pub 15-T percentage method. Virginia is a separate state estimate. Social Security 6.2% (wage base ${esc(String(tax.SS_WAGE_BASE))} prorated) and Medicare 1.45% of gross. Historical payweeks are not rewritten unless you transfer this period again.</p>
+      <p class="disclaimer">Federal withholding per IRS Pub 15-T (2026) Worksheet 1A. Social Security 6.2% up to $${esc(String(tax.SS_WAGE_BASE))} YTD. Medicare 1.45% plus 0.9% Additional Medicare over $200,000 YTD. Virginia formula after $8,750 standard deduction. No local VA tax. No employee VA UI. Historical payweeks are not rewritten unless you transfer this period again.</p>
       <div class="row-actions">
         <button class="btn btn-primary" id="tc-transfer"${calc && !archivedSelected ? '' : ' disabled'}>Transfer to profile</button>
       </div>
@@ -1055,37 +1120,18 @@ function bindTimeclocks() {
     const punch = state.time.punches.find((p) => p.id === id);
     row.querySelectorAll('[data-punch-field]').forEach((input) => {
       const apply = () => {
-        punch[input.getAttribute('data-punch-field')] = input.value;
-        const hoursCell = row.querySelector('.hours-cell');
-        if (hoursCell) hoursCell.textContent = hoursFmt(tax.punchHours(punch.clockIn, punch.clockOut));
-        const stats = document.getElementById('tc-stats');
-        if (!stats) return;
-        const calc = currentTimePay();
-        if (!calc) {
-          stats.innerHTML = '<p class="muted">Select an employee to estimate pay.</p>';
+        const field = input.getAttribute('data-punch-field');
+        punch[field] = field === 'hours' ? input.value : input.value;
+        if (field === 'payType') {
+          render();
           return;
         }
-        stats.innerHTML = `
-      <div class="stats">
-        <div class="stat"><div class="k">Regular</div><div class="v">${hoursFmt(calc.pay.regularHours)} h</div></div>
-        <div class="stat"><div class="k">Overtime</div><div class="v">${hoursFmt(calc.pay.otHours)} h</div></div>
-        <div class="stat"><div class="k">Gross</div><div class="v">${money(calc.pay.gross)}</div></div>
-        <div class="stat"><div class="k">Est. taxes</div><div class="v neg">${money(calc.pay.totalTaxes)}</div></div>
-        <div class="stat"><div class="k">Est. net</div><div class="v pos">${money(calc.pay.net)}</div></div>
-      </div>
-      <div class="table-wrap">
-        <table class="data">
-          <thead><tr><th>Federal</th><th>Social Security</th><th>Medicare</th><th>Virginia</th><th>Pre-tax</th><th>Hourly used</th></tr></thead>
-          <tbody><tr>
-            <td>${money(calc.pay.federal)}</td>
-            <td>${money(calc.pay.ss)}</td>
-            <td>${money(calc.pay.medicare)}</td>
-            <td>${money(calc.pay.state)}</td>
-            <td>${money(calc.pay.pretax)}</td>
-            <td>${money(calc.pay.hourly)}</td>
-          </tr></tbody>
-        </table>
-      </div>`;
+        const hoursCell = row.querySelector('.hours-cell');
+        if (hoursCell && (punch.payType || 'regular') === 'regular') {
+          hoursCell.textContent = hoursFmt(tax.rowHours(punch));
+        }
+        const stats = document.getElementById('tc-stats');
+        if (stats) stats.innerHTML = payStatsHtml(currentTimePay());
       };
       input.addEventListener('change', apply);
       input.addEventListener('input', apply);
@@ -1136,6 +1182,8 @@ function bindTimeclocks() {
         weekEnding: period.periodEnd,
         hours: calc.pay.totalHours,
         regularHours: calc.pay.regularHours,
+        vacationHours: calc.pay.vacationHours,
+        holidayHours: calc.pay.holidayHours,
         otHours: calc.pay.otHours,
         gross: calc.pay.gross,
         federal: calc.pay.federal,
@@ -1261,7 +1309,7 @@ function renderPayroll() {
           <tbody>${body}</tbody>
         </table>
       </div>
-      <p class="disclaimer">Federal withholding per IRS Pub 15-T percentage method. Virginia is a separate state estimate. Stored historical payweeks are not recalculated here.</p>
+      <p class="disclaimer">Federal withholding per IRS Pub 15-T (2026) Worksheet 1A. Virginia formula after the $8,750 standard deduction. Stored historical payweeks are not recalculated here.</p>
     </div>`;
 }
 
@@ -1309,7 +1357,10 @@ function renderSettings() {
         <div class="field"><label>Channel</label><input value="stable" readonly /></div>
         <div class="field span-2"><label>Pay schedule</label><input value="Weekly · Wed–Tue · Paid Wednesday" readonly /></div>
       </div>
-      <p class="hint">Period is Wednesday through Tuesday. Payday is the Wednesday after that Tuesday. Overtime is hours over 40 in that window.</p>
+      <p class="hint">Period is Wednesday through Tuesday. Payday is the Wednesday after that Tuesday (example: 08/12/2026–08/18/2026 paid 08/19/2026). Regular, vacation, and holiday hours are all taxable at the hourly rate. Overtime is hours over 40 in that window at 1.5×. No local VA tax. No employee VA UI.</p>
+      <div class="row-actions">
+        <button class="btn btn-secondary" id="btn-open-p15t">Open IRS Pub 15-T (2026)</button>
+      </div>
     </div>
 
     <div class="card">
@@ -1372,6 +1423,18 @@ function renderSettings() {
 }
 
 function bindSettings() {
+  const pubBtn = document.getElementById('btn-open-p15t');
+  if (pubBtn) {
+    pubBtn.addEventListener('click', async () => {
+      try {
+        const res = await api.openPub15t();
+        if (res && res.ok === false) toast('Could not open Pub 15-T.', 'err');
+      } catch {
+        toast('Could not open Pub 15-T.', 'err');
+      }
+    });
+  }
+
   document.getElementById('btn-open-folder').addEventListener('click', async () => {
     try {
       await api.openDataFolder();
