@@ -156,6 +156,31 @@ button { cursor: pointer; }
 
 .nav-item svg { flex-shrink: 0; }
 
+.mode-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.mode-btn {
+  border: 1px solid var(--border-strong);
+  background: #fff;
+  color: var(--text);
+  border-radius: 4px;
+  height: 36px;
+  padding: 0 14px;
+  font-weight: 600;
+}
+
+.mode-btn:hover { background: #f7f8fa; }
+
+.mode-btn.is-active {
+  background: var(--blue-soft);
+  border-color: var(--blue);
+  color: var(--blue-dark);
+}
+
 .sidebar-bottom {
   margin-top: auto;
   padding: 10px 10px 16px;

@@ -36,7 +36,10 @@ const state = {
   time: {
     employeeId: '',
     periodEnd: '',
-    punches: []
+    mode: 'punches',
+    punches: [],
+    vacationHours: '',
+    holidayHours: ''
   },
   update: {
     phase: 'idle',
@@ -571,10 +574,10 @@ function renderEmployees() {
         <div class="field"><label>W-4 Step 3 dependents ($)</label>
           <input id="f-dependents" type="number" min="0" step="1" value="${esc(emp.w4Step3Dependents || 0)}" />
         </div>
-        <div class="field"><label>Extra federal per period</label>
+        <div class="field"><label>Extra federal per period (added to calculated FIT)</label>
           <input id="f-extraFederal" type="number" min="0" step="0.01" value="${esc(emp.extraFederal || 0)}" />
         </div>
-        <div class="field"><label>Extra state per period</label>
+        <div class="field"><label>Extra state per period (added to calculated VA)</label>
           <input id="f-extraState" type="number" min="0" step="0.01" value="${esc(emp.extraState || 0)}" />
         </div>
         <div class="field"><label>Multiple jobs</label>
@@ -943,15 +946,54 @@ function bindAdd() {
   });
 }
 
-function emptyPunch(periodStart, payType) {
-  const kind = payType || 'regular';
+function emptyDayRow(iso) {
   return {
     id: uid('punch'),
-    date: periodStart || todayISO(),
-    clockIn: kind === 'regular' ? '08:00' : '',
-    clockOut: kind === 'regular' ? '17:00' : '',
-    hours: kind === 'regular' ? '' : '8.00',
-    payType: kind
+    date: iso,
+    clockIn: '',
+    lunchOut: '',
+    lunchIn: '',
+    clockOut: '',
+    hours: '',
+    payType: 'regular'
+  };
+}
+
+function weekdayName(iso) {
+  const d = tax.parseISODate(iso);
+  return d ? ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()] : '';
+}
+
+function ensureWeekRows(period, punches) {
+  const days = tax.periodDays(period.periodStart, period.periodEnd);
+  const byDate = {};
+  let vacationHours = 0;
+  let holidayHours = 0;
+  for (const p of punches || []) {
+    const kind = p.payType || 'regular';
+    if (kind === 'vacation') vacationHours += tax.rowHours(p);
+    else if (kind === 'holiday') holidayHours += tax.rowHours(p);
+    else if (p.date) byDate[p.date] = p;
+  }
+  const rows = days.map((iso) => {
+    const prev = byDate[iso];
+    if (!prev) return emptyDayRow(iso);
+    return {
+      id: prev.id || uid('punch'),
+      date: iso,
+      clockIn: prev.clockIn || '',
+      lunchOut: prev.lunchOut || '',
+      lunchIn: prev.lunchIn || '',
+      clockOut: prev.clockOut || '',
+      hours: prev.hours != null && prev.hours !== '' ? prev.hours : '',
+      payType: 'regular',
+      entryMode: prev.entryMode
+    };
+  });
+  return {
+    rows,
+    vacationHours: tax.roundHours(vacationHours),
+    holidayHours: tax.roundHours(holidayHours)
   };
 }
 
@@ -960,6 +1002,14 @@ function payStatsHtml(calc) {
   const bits = [];
   if (calc.pay.vacationHours) bits.push(`${hoursFmt(calc.pay.vacationHours)} vac`);
   if (calc.pay.holidayHours) bits.push(`${hoursFmt(calc.pay.holidayHours)} holiday`);
+  const fitNote =
+    calc.pay.federalExtra > 0
+      ? `${money(calc.pay.federalComputed)} calculated + ${money(calc.pay.federalExtra)} extra`
+      : '';
+  const vaNote =
+    calc.pay.stateExtra > 0
+      ? `${money(calc.pay.stateComputed)} calculated + ${money(calc.pay.stateExtra)} extra`
+      : '';
   return `
       <div class="stats">
         <div class="stat"><div class="k">Straight</div><div class="v">${hoursFmt(calc.pay.straightHours)} h</div></div>
@@ -973,10 +1023,10 @@ function payStatsHtml(calc) {
         <table class="data">
           <thead><tr><th>FIT</th><th>SS</th><th>Med</th><th>VA</th><th>Pre-tax</th><th>Hourly</th></tr></thead>
           <tbody><tr>
-            <td>${money(calc.pay.federal)}</td>
+            <td>${money(calc.pay.federal)}${fitNote ? `<div class="hint">${esc(fitNote)}</div>` : ''}</td>
             <td>${money(calc.pay.ss)}</td>
             <td>${money(calc.pay.medicare)}</td>
-            <td>${money(calc.pay.state)}</td>
+            <td>${money(calc.pay.state)}${vaNote ? `<div class="hint">${esc(vaNote)}</div>` : ''}</td>
             <td>${money(calc.pay.pretax)}</td>
             <td>${money(calc.pay.hourly)}</td>
           </tr></tbody>
@@ -994,10 +1044,30 @@ function loadPunchesForWeek() {
   state.time.periodEnd = period.periodEnd;
   const emp = findEmployee(state.time.employeeId);
   const existing = findPayweek(emp, period.periodEnd);
-  if (existing && Array.isArray(existing.punches) && existing.punches.length) {
-    state.time.punches = JSON.parse(JSON.stringify(existing.punches));
+  if (existing) {
+    state.time.mode = existing.timeEntryMode === 'hours' ? 'hours' : 'punches';
+    const packed = ensureWeekRows(period, existing.punches || []);
+    state.time.punches = packed.rows;
+    state.time.vacationHours =
+      existing.vacationHours != null && existing.vacationHours !== ''
+        ? existing.vacationHours
+        : packed.vacationHours || '';
+    state.time.holidayHours =
+      existing.holidayHours != null && existing.holidayHours !== ''
+        ? existing.holidayHours
+        : packed.holidayHours || '';
+    if (existing.dayHours && typeof existing.dayHours === 'object') {
+      state.time.punches.forEach((row) => {
+        if (existing.dayHours[row.date] != null && existing.dayHours[row.date] !== '') {
+          row.hours = existing.dayHours[row.date];
+        }
+      });
+    }
   } else {
-    state.time.punches = [emptyPunch(period.periodStart)];
+    const packed = ensureWeekRows(period, []);
+    state.time.punches = packed.rows;
+    state.time.vacationHours = '';
+    state.time.holidayHours = '';
   }
 }
 
@@ -1007,13 +1077,40 @@ function ensureTimeDefaults() {
     const snapped = periodFromEnd(state.time.periodEnd);
     state.time.periodEnd = snapped.periodEnd;
   }
+  if (!state.time.mode) state.time.mode = 'punches';
   if (!state.time.employeeId && state.selectedId && isActiveForPay(findEmployee(state.selectedId))) {
     state.time.employeeId = state.selectedId;
   }
   if (state.time.employeeId && isArchived(findEmployee(state.time.employeeId))) {
     state.time.employeeId = '';
   }
-  if (!state.time.punches.length) loadPunchesForWeek();
+  const period = periodFromEnd(state.time.periodEnd);
+  const days = tax.periodDays(period.periodStart, period.periodEnd);
+  if (!state.time.punches.length || state.time.punches.length !== days.length) {
+    loadPunchesForWeek();
+  }
+}
+
+function currentTimeInput() {
+  const period = periodFromEnd(state.time.periodEnd);
+  const packed = ensureWeekRows(period, state.time.punches);
+  const vac = tax.roundHours(state.time.vacationHours);
+  const hol = tax.roundHours(state.time.holidayHours);
+  if (state.time.mode === 'hours') {
+    let regularHours = 0;
+    for (const row of packed.rows) {
+      regularHours += tax.roundHours(row.hours);
+    }
+    return {
+      regularHours: tax.roundHours(regularHours),
+      vacationHours: vac,
+      holidayHours: hol
+    };
+  }
+  const rows = packed.rows.map((row) => ({ ...row, entryMode: 'punches', payType: 'regular' }));
+  if (vac) rows.push({ payType: 'vacation', hours: vac, date: period.periodStart });
+  if (hol) rows.push({ payType: 'holiday', hours: hol, date: period.periodStart });
+  return rows;
 }
 
 function currentTimePay() {
@@ -1021,7 +1118,7 @@ function currentTimePay() {
   if (!emp || isArchived(emp)) return null;
   const period = periodFromEnd(state.time.periodEnd);
   const ytd = ytdGrossBefore(emp, period.payday, period.periodEnd);
-  const pay = tax.computePay(emp, state.time.punches, { ytdGross: ytd });
+  const pay = tax.computePay(emp, currentTimeInput(), { ytdGross: ytd });
   return { emp, hours: pay.totalHours, pay };
 }
 
@@ -1031,28 +1128,41 @@ function renderTimeclocks() {
   const emp = findEmployee(state.time.employeeId);
   const archivedSelected = isArchived(emp);
   const calc = !archivedSelected ? currentTimePay() : null;
-  const punchRows = state.time.punches
+  const hoursMode = state.time.mode === 'hours';
+  const dayRows = (state.time.punches || [])
+    .filter((p) => (p.payType || 'regular') === 'regular')
     .map((p) => {
-      const kind = p.payType || 'regular';
-      const hrs = tax.rowHours(p);
-      const hourField =
-        kind === 'regular'
-          ? `<span class="hours-cell">${hoursFmt(hrs)}</span>`
-          : `<input type="number" min="0" step="0.01" data-punch-field="hours" value="${esc(p.hours != null && p.hours !== '' ? p.hours : hrs)}" />`;
-      const clocks =
-        kind === 'regular'
-          ? `<td><input type="time" data-punch-field="clockIn" value="${esc(p.clockIn || '')}" /></td>
-        <td><input type="time" data-punch-field="clockOut" value="${esc(p.clockOut || '')}" /></td>`
-          : `<td colspan="2" class="muted">Paid hours at hourly rate</td>`;
+      const paid = hoursMode
+        ? tax.roundHours(p.hours)
+        : tax.paidPunchHours(p);
+      if (hoursMode) {
+        return `<tr data-punch="${esc(p.id)}">
+          <td>${esc(weekdayName(p.date))}</td>
+          <td><input type="date" data-punch-field="date" value="${esc(p.date || '')}" readonly /></td>
+          <td class="num"><input type="number" min="0" step="0.01" data-punch-field="hours" value="${esc(p.hours === 0 ? 0 : p.hours || '')}" /></td>
+        </tr>`;
+      }
       return `<tr data-punch="${esc(p.id)}">
-        <td><select data-punch-field="payType">${optionList(['regular','vacation','holiday'], kind, { regular: 'Regular', vacation: 'Vacation', holiday: 'Holiday' })}</select></td>
-        <td><input type="date" data-punch-field="date" value="${esc(p.date || '')}" /></td>
-        ${clocks}
-        <td class="num mono hours-cell">${hourField}</td>
-        <td><button type="button" class="icon-btn" data-del-punch="${esc(p.id)}" title="Delete row">✕</button></td>
+        <td>${esc(weekdayName(p.date))}</td>
+        <td><input type="date" data-punch-field="date" value="${esc(p.date || '')}" readonly /></td>
+        <td><input type="time" data-punch-field="clockIn" value="${esc(p.clockIn || '')}" /></td>
+        <td><input type="time" data-punch-field="lunchOut" value="${esc(p.lunchOut || '')}" /></td>
+        <td><input type="time" data-punch-field="lunchIn" value="${esc(p.lunchIn || '')}" /></td>
+        <td><input type="time" data-punch-field="clockOut" value="${esc(p.clockOut || '')}" /></td>
+        <td class="num mono hours-cell">${hoursFmt(paid)}</td>
       </tr>`;
     })
     .join('');
+
+  const dayTable = hoursMode
+    ? `<table class="data">
+          <thead><tr><th>Day</th><th>Date</th><th class="num">Hours</th></tr></thead>
+          <tbody>${dayRows}</tbody>
+        </table>`
+    : `<table class="data">
+          <thead><tr><th>Day</th><th>Date</th><th>Clock in</th><th>Lunch out</th><th>Lunch in</th><th>Clock out</th><th class="num">Paid hours</th></tr></thead>
+          <tbody>${dayRows}</tbody>
+        </table>`;
 
   const stats = `<div id="tc-stats">${payStatsHtml(calc)}</div>`;
 
@@ -1073,26 +1183,34 @@ function renderTimeclocks() {
         </div>
       </div>
       <p class="hint">Period ${esc(period.periodStart)} (Wed) through ${esc(period.periodEnd)} (Tue). Paid ${esc(period.payday)}.</p>
+      <div class="mode-toggle" role="tablist">
+        <button type="button" class="mode-btn${hoursMode ? '' : ' is-active'}" data-time-mode="punches">Clock punches</button>
+        <button type="button" class="mode-btn${hoursMode ? ' is-active' : ''}" data-time-mode="hours">Regular pay — enter hours</button>
+      </div>
     </div>
     <div class="card">
       <div class="card-head">
-        <h2>Punches</h2>
-        <button class="btn btn-secondary btn-sm" id="tc-add-row">Add row</button>
+        <h2>${hoursMode ? 'Hours by day' : 'Clock punches'}</h2>
       </div>
-      <p class="hint">Regular, vacation, and holiday are all paid at the hourly rate and count toward the 40-hour Wed–Tue window. Overtime is 1.5×. Overnight punches wrap past midnight.</p>
-      <div class="table-wrap">
-        <table class="data">
-          <thead>
-            <tr><th>Type</th><th>Date</th><th>Clock in</th><th>Clock out</th><th class="num">Hours</th><th></th></tr>
-          </thead>
-          <tbody>${punchRows || '<tr><td colspan="6" class="muted">No punches</td></tr>'}</tbody>
-        </table>
+      <p class="hint">${
+        hoursMode
+          ? 'Enter hours for each day Wed–Tue. Overtime is hours over 40 in that window at 1.5×. Empty lunch is not used in this mode.'
+          : 'Paid hours = (clock out − clock in) − (lunch in − lunch out). Leave lunch blank for no lunch subtraction. Overnight shifts wrap past midnight.'
+      }</p>
+      <div class="table-wrap">${dayTable}</div>
+      <div class="grid grid-2" style="margin-top:16px">
+        <div class="field"><label>Vacation hours (taxable)</label>
+          <input id="tc-vac" type="number" min="0" step="0.01" value="${esc(state.time.vacationHours)}" />
+        </div>
+        <div class="field"><label>Holiday hours (taxable)</label>
+          <input id="tc-hol" type="number" min="0" step="0.01" value="${esc(state.time.holidayHours)}" />
+        </div>
       </div>
     </div>
     <div class="card">
       <div class="section-title">Estimated pay</div>
       ${stats}
-      <p class="disclaimer">Federal withholding per IRS Pub 15-T (2026) Worksheet 1A. Social Security 6.2% up to $${esc(String(tax.SS_WAGE_BASE))} YTD. Medicare 1.45% plus 0.9% Additional Medicare over $200,000 YTD. Virginia formula after $8,750 standard deduction. No local VA tax. No employee VA UI. Historical payweeks are not rewritten unless you transfer this period again.</p>
+      <p class="disclaimer">Federal withholding per IRS Pub 15-T (2026) Worksheet 1A. Extra federal/state is added on top of calculated tax, never a replacement. Social Security 6.2% up to $${esc(String(tax.SS_WAGE_BASE))} YTD. Medicare 1.45%. Virginia after $8,750 standard deduction. No local VA tax. No employee VA UI.</p>
       <div class="row-actions">
         <button class="btn btn-primary" id="tc-transfer"${calc && !archivedSelected ? '' : ' disabled'}>Transfer to profile</button>
       </div>
@@ -1110,41 +1228,56 @@ function bindTimeclocks() {
     loadPunchesForWeek();
     render();
   });
-  document.getElementById('tc-add-row').addEventListener('click', () => {
-    const period = periodFromEnd(state.time.periodEnd);
-    state.time.punches.push(emptyPunch(period.periodStart));
-    render();
+  document.querySelectorAll('[data-time-mode]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const next = btn.getAttribute('data-time-mode') === 'hours' ? 'hours' : 'punches';
+      if (next === state.time.mode) return;
+      if (next === 'hours') {
+        state.time.punches.forEach((row) => {
+          if ((row.payType || 'regular') !== 'regular') return;
+          const paid = tax.paidPunchHours(row);
+          if (paid && (row.hours === '' || row.hours == null)) row.hours = paid;
+          row.entryMode = 'hours';
+        });
+      } else {
+        state.time.punches.forEach((row) => {
+          row.entryMode = 'punches';
+        });
+      }
+      state.time.mode = next;
+      render();
+    });
   });
+  const vac = document.getElementById('tc-vac');
+  const hol = document.getElementById('tc-hol');
+  const syncExtras = () => {
+    if (vac) state.time.vacationHours = vac.value;
+    if (hol) state.time.holidayHours = hol.value;
+    const stats = document.getElementById('tc-stats');
+    if (stats) stats.innerHTML = payStatsHtml(currentTimePay());
+  };
+  if (vac) {
+    vac.addEventListener('input', syncExtras);
+    vac.addEventListener('change', syncExtras);
+  }
+  if (hol) {
+    hol.addEventListener('input', syncExtras);
+    hol.addEventListener('change', syncExtras);
+  }
   document.querySelectorAll('[data-punch]').forEach((row) => {
     const id = row.getAttribute('data-punch');
     const punch = state.time.punches.find((p) => p.id === id);
     row.querySelectorAll('[data-punch-field]').forEach((input) => {
       const apply = () => {
         const field = input.getAttribute('data-punch-field');
-        punch[field] = field === 'hours' ? input.value : input.value;
-        if (field === 'payType') {
-          render();
-          return;
-        }
+        punch[field] = input.value;
         const hoursCell = row.querySelector('.hours-cell');
-        if (hoursCell && (punch.payType || 'regular') === 'regular') {
-          hoursCell.textContent = hoursFmt(tax.rowHours(punch));
-        }
+        if (hoursCell) hoursCell.textContent = hoursFmt(tax.paidPunchHours(punch));
         const stats = document.getElementById('tc-stats');
         if (stats) stats.innerHTML = payStatsHtml(currentTimePay());
       };
       input.addEventListener('change', apply);
       input.addEventListener('input', apply);
-    });
-  });
-  document.querySelectorAll('[data-del-punch]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-del-punch');
-      state.time.punches = state.time.punches.filter((p) => p.id !== id);
-      if (!state.time.punches.length) {
-        state.time.punches = [emptyPunch(periodFromEnd(state.time.periodEnd).periodStart)];
-      }
-      render();
     });
   });
   const transfer = document.getElementById('tc-transfer');
@@ -1175,11 +1308,22 @@ function bindTimeclocks() {
         });
         if (choice !== 'replace') return;
       }
+      const dayHours = {};
+      state.time.punches.forEach((row) => {
+        if (row.date) dayHours[row.date] = row.hours;
+      });
+      const extraPunches = [];
+      const vacHrs = tax.roundHours(state.time.vacationHours);
+      const holHrs = tax.roundHours(state.time.holidayHours);
+      if (vacHrs) extraPunches.push({ id: uid('punch'), date: period.periodStart, payType: 'vacation', hours: vacHrs });
+      if (holHrs) extraPunches.push({ id: uid('punch'), date: period.periodStart, payType: 'holiday', hours: holHrs });
       const record = {
         periodStart: period.periodStart,
         periodEnd: period.periodEnd,
         payday: period.payday,
         weekEnding: period.periodEnd,
+        timeEntryMode: state.time.mode,
+        dayHours,
         hours: calc.pay.totalHours,
         regularHours: calc.pay.regularHours,
         vacationHours: calc.pay.vacationHours,
@@ -1187,12 +1331,16 @@ function bindTimeclocks() {
         otHours: calc.pay.otHours,
         gross: calc.pay.gross,
         federal: calc.pay.federal,
+        federalComputed: calc.pay.federalComputed,
+        federalExtra: calc.pay.federalExtra,
         ss: calc.pay.ss,
         medicare: calc.pay.medicare,
         state: calc.pay.state,
+        stateComputed: calc.pay.stateComputed,
+        stateExtra: calc.pay.stateExtra,
         pretax: calc.pay.pretax,
         net: calc.pay.net,
-        punches: JSON.parse(JSON.stringify(state.time.punches))
+        punches: JSON.parse(JSON.stringify(state.time.punches.concat(extraPunches)))
       };
       if (existingIdx >= 0) emp.payweeks[existingIdx] = record;
       else emp.payweeks.push(record);

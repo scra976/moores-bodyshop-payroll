@@ -182,14 +182,43 @@
     return roundHours((end - start) / 60);
   }
 
+  function lunchHours(lunchOut, lunchIn) {
+    if (!lunchOut || !lunchIn) return 0;
+    const [oh, om] = String(lunchOut).split(':').map(Number);
+    const [ih, im] = String(lunchIn).split(':').map(Number);
+    if ([oh, om, ih, im].some((n) => !Number.isFinite(n))) return 0;
+    let start = oh * 60 + (om || 0);
+    let end = ih * 60 + (im || 0);
+    if (end <= start) return 0;
+    return roundHours((end - start) / 60);
+  }
+
+  function paidPunchHours(punch) {
+    const work = punchHours(punch && punch.clockIn, punch && punch.clockOut);
+    const lunch = lunchHours(punch && punch.lunchOut, punch && punch.lunchIn);
+    return roundHours(Math.max(0, work - lunch));
+  }
+
+  function periodDays(startIso, endIso) {
+    const start = parseISODate(startIso);
+    const end = parseISODate(endIso);
+    if (!start || !end) return [];
+    const days = [];
+    for (let d = start; d.getTime() <= end.getTime(); d = addDays(d, 1)) {
+      days.push(toISODate(d));
+    }
+    return days;
+  }
+
   function rowHours(punch) {
     if (!punch) return 0;
     const kind = punch.payType || 'regular';
     if (kind === 'vacation' || kind === 'holiday') {
       if (punch.hours !== '' && punch.hours != null) return roundHours(punch.hours);
     }
-    const fromClock = punchHours(punch.clockIn, punch.clockOut);
-    if (fromClock) return fromClock;
+    if (punch.entryMode === 'hours') return roundHours(punch.hours);
+    const paid = paidPunchHours(punch);
+    if (paid) return paid;
     return roundHours(punch.hours);
   }
 
@@ -276,26 +305,40 @@
 
     const line3a = Math.max(0, Number(employee && employee.w4Step3Dependents) || 0);
     const line3b = line3a / line1b;
-    const line3c = Math.max(0, line2h - line3b);
-    const line4a = Math.max(0, Number(employee && employee.extraFederal) || 0);
-    return round2(line3c + line4a);
+    const tentative = Math.max(0, line2h - line3b);
+    const extra = Math.max(0, Number(employee && employee.extraFederal) || 0);
+    return {
+      tentative: round2(tentative),
+      extra: round2(extra),
+      total: round2(tentative + extra)
+    };
   }
 
   function virginiaWithholding(employee, taxableWages, ppy) {
-    if (employee && (employee.vaWithhold === false || employee.vaWithhold === 'exempt')) return 0;
+    const extra = Math.max(0, Number(employee && employee.extraState) || 0);
+    const exempt = employee && (employee.vaWithhold === false || employee.vaWithhold === 'exempt');
+    if (exempt) {
+      return { tentative: 0, extra: round2(extra), total: round2(extra) };
+    }
     const g = Math.max(0, Number(taxableWages) || 0);
     const periods = ppy || 52;
     const e1 = Math.max(0, Number(employee && employee.vaE1) || 0);
     const e2 = Math.max(0, Number(employee && employee.vaE2) || 0);
     const T = g * periods - (VA_STD_DED + e1 * VA_E1 + e2 * VA_E2);
-    if (T <= 0) return 0;
     let W = 0;
-    if (T <= 3000) W = 0.02 * T;
-    else if (T <= 5000) W = 60 + 0.03 * (T - 3000);
-    else if (T <= 17000) W = 120 + 0.05 * (T - 5000);
-    else W = 720 + 0.0575 * (T - 17000);
-    W = W / periods + (Number(employee && employee.extraState) || 0);
-    return round2(Math.max(0, W));
+    if (T > 0) {
+      if (T <= 3000) W = 0.02 * T;
+      else if (T <= 5000) W = 60 + 0.03 * (T - 3000);
+      else if (T <= 17000) W = 120 + 0.05 * (T - 5000);
+      else W = 720 + 0.0575 * (T - 17000);
+      W = W / periods;
+    }
+    const tentative = Math.max(0, W);
+    return {
+      tentative: round2(tentative),
+      extra: round2(extra),
+      total: round2(tentative + extra)
+    };
   }
 
   function cappedPeriodTax(ytdBefore, thisWages, rate, cap) {
@@ -315,9 +358,14 @@
     const hours = breakdown.totalHours;
     const ppy = periodsPerYear(employee && employee.payFrequency);
     const hourly = hourlyRate(employee);
-    const otHours = roundHours(Math.max(0, hours - 40));
-    const straightHours = roundHours(Math.min(40, hours));
-    const gross = round2(straightHours * hourly + otHours * hourly * 1.5);
+    const otHours = roundHours(Math.max(0, breakdown.regularHours - 40));
+    const straightHours = roundHours(Math.min(40, breakdown.regularHours));
+    const gross = round2(
+      straightHours * hourly +
+        otHours * hourly * 1.5 +
+        breakdown.vacationHours * hourly +
+        breakdown.holidayHours * hourly
+    );
     const pretax = round2(Math.max(0, Number(employee && employee.preTaxDeduction) || 0));
     const taxable = round2(Math.max(0, gross - pretax));
     const ytdGross = round2((opts && opts.ytdGross) || 0);
@@ -328,8 +376,10 @@
     const addMed = additionalMedicare(ytdGross, gross);
     const medicare = round2(medicareBase + addMed);
 
-    const federal = federalPub15T(employee, taxable, ppy);
-    const state = virginiaWithholding(employee, taxable, ppy);
+    const fit = federalPub15T(employee, taxable, ppy);
+    const va = virginiaWithholding(employee, taxable, ppy);
+    const federal = fit.total;
+    const state = va.total;
     const net = round2(gross - pretax - federal - ss - medicare - state);
     const totalTaxes = round2(federal + ss + medicare + state);
 
@@ -345,10 +395,14 @@
       pretax,
       taxable,
       federal,
+      federalComputed: fit.tentative,
+      federalExtra: fit.extra,
       ss,
       medicare,
       additionalMedicare: addMed,
       state,
+      stateComputed: va.tentative,
+      stateExtra: va.extra,
       totalTaxes,
       net,
       periodsPerYear: ppy,
@@ -373,6 +427,9 @@
     periodsPerYear,
     hourlyRate,
     punchHours,
+    lunchHours,
+    paidPunchHours,
+    periodDays,
     rowHours,
     hoursBreakdown,
     totalPunchHours,

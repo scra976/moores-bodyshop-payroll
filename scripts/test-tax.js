@@ -119,6 +119,24 @@ assert(p.payday === '2026-08-19', `payday ${p.payday}`);
 
 assert(tax.SS_WAGE_BASE === 184500, '2026 SS wage base');
 
+const extraEmp = { ...wesley, extraFederal: 43, extraState: 10 };
+const extraPay = tax.computePay(extraEmp, 22);
+assert(extraPay.federalComputed === 4.24, `FIT tentative ${extraPay.federalComputed}`);
+assert(extraPay.federalExtra === 43, `FIT extra ${extraPay.federalExtra}`);
+assert(extraPay.federal === 47.24, `FIT total ${extraPay.federal} must be calculated + extra`);
+assert(extraPay.stateComputed === 6.69, `VA tentative ${extraPay.stateComputed}`);
+assert(extraPay.stateExtra === 10, `VA extra ${extraPay.stateExtra}`);
+assert(extraPay.state === 16.69, `VA total ${extraPay.state}`);
+
+assert(tax.paidPunchHours({ clockIn: '08:00', clockOut: '17:00' }) === 9, 'no lunch');
+assert(
+  tax.paidPunchHours({ clockIn: '08:00', clockOut: '17:00', lunchOut: '12:00', lunchIn: '12:30' }) === 8.5,
+  'lunch subtracted'
+);
+
+const days = tax.periodDays('2026-08-12', '2026-08-18');
+assert(days.length === 7 && days[0] === '2026-08-12' && days[6] === '2026-08-18', 'Wed-Tue days');
+
 const first = tax.computePay(wesley, { regularHours: 30.11, holidayHours: 8 }, { ytdGross: 0 });
 assert(first.ss === 37.81 && first.medicare === 8.84, `first-period FICA ${first.ss} ${first.medicare}`);
 assert(first.net === 511.43, `first net ${first.net}`);
