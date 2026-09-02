@@ -176,4 +176,43 @@ const qbSalAnnual = tax.computePay(qbAnnualSalary, []);
 assert(qbSalAnnual.gross === 835, `annual salary gross ${qbSalAnnual.gross}`);
 assert(qbSalAnnual.federal === 64.58, `annual salary FIT ${qbSalAnnual.federal}`);
 
-console.log('TAX_OK', { firstFit: first.federal, firstVa: first.state, firstNet: first.net, qbFit: qb40.federal, ficaNotes });
+const nineMfj2020 = {
+  payType: 'hourly',
+  rate: 9,
+  payFrequency: 'weekly',
+  filingStatus: 'mfj',
+  w4Form: '2020',
+  vaWithhold: true,
+  extraFederal: 43,
+  extraState: 5
+};
+const nine2020 = tax.computePay(nineMfj2020, 40);
+assert(nine2020.gross === 360, `nine 40h gross ${nine2020.gross}`);
+assert(nine2020.federalComputed === 0, `2020 MFJ $9×40 calculated FIT must be 0, got ${nine2020.federalComputed}`);
+assert(nine2020.federal === 43, `2020 MFJ $9×40 FIT ${nine2020.federal}`);
+
+const nineLegacy = {
+  payType: 'hourly',
+  rate: 9,
+  payFrequency: 'weekly',
+  filingStatus: 'single',
+  w4Form: '2019',
+  w4Allowances: 0,
+  vaWithhold: true,
+  extraFederal: 43,
+  extraState: 5
+};
+const nineQb = tax.computePay(nineLegacy, 40);
+assert(nineQb.gross === 360, `legacy $9×40 gross ${nineQb.gross}`);
+assert(nineQb.federalComputed === 21.58, `2019 Single 0 allowances calculated FIT ${nineQb.federalComputed}`);
+assert(nineQb.federalExtra === 43, `legacy extra ${nineQb.federalExtra}`);
+assert(nineQb.federal === 64.58, `QB $9/hour FIT ${nineQb.federal} must be 21.58+43`);
+
+console.log('TAX_OK', {
+  firstFit: first.federal,
+  firstVa: first.state,
+  firstNet: first.net,
+  qbFit: qb40.federal,
+  nineQbFit: nineQb.federal,
+  ficaNotes
+});

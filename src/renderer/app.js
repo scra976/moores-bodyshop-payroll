@@ -214,6 +214,8 @@ function emptyEmployee() {
     rate: '',
     payFrequency: 'weekly',
     vaWithhold: true,
+    w4Form: '2020',
+    w4Allowances: 0,
     w4Step3Dependents: 0,
     extraFederal: 0,
     extraState: 0,
@@ -564,16 +566,31 @@ function renderEmployees() {
         <div class="field"><label>Federal filing status</label>
           <select id="f-filingStatus">${optionList(
             ['single','mfj','hoh'],
-            emp.filingStatus || 'single',
-            { single: 'Single or Married Filing Separately', mfj: 'Married Filing Jointly', hoh: 'Head of Household' }
+            emp.filingStatus === 'married_single' ? 'single' : emp.filingStatus || 'single',
+            {
+              single: 'Single / Married, withhold at single rate',
+              mfj: 'Married Filing Jointly',
+              hoh: 'Head of Household'
+            }
+          )}</select>
+        </div>
+        <div class="field"><label>Form W-4</label>
+          <select id="f-w4Form">${optionList(
+            ['2020','2019'],
+            tax.usesLegacyW4(emp) ? '2019' : '2020',
+            { '2020': '2020 or later', '2019': '2019 or earlier (allowances)' }
           )}</select>
         </div>
         <div class="field"><label>Virginia / state withhold</label>
           <select id="f-vaWithhold">${optionList(['yes','exempt'], emp.vaWithhold === false ? 'exempt' : 'yes', { yes: 'Withhold VA', exempt: 'Exempt' })}</select>
         </div>
-        <div class="field"><label>W-4 Step 3 dependents ($)</label>
-          <input id="f-dependents" type="number" min="0" step="1" value="${esc(emp.w4Step3Dependents || 0)}" />
-        </div>
+        ${
+          tax.usesLegacyW4(emp)
+            ? `<div class="field"><label>W-4 allowances (2019 or earlier)</label>
+                <input id="f-allowances" type="number" min="0" step="1" value="${esc(emp.w4Allowances || 0)}" /></div>`
+            : `<div class="field"><label>W-4 Step 3 dependents ($)</label>
+                <input id="f-dependents" type="number" min="0" step="1" value="${esc(emp.w4Step3Dependents || 0)}" /></div>`
+        }
         <div class="field"><label>Extra federal per period (added to calculated FIT)</label>
           <input id="f-extraFederal" type="number" min="0" step="0.01" value="${esc(emp.extraFederal || 0)}" />
         </div>
@@ -602,13 +619,22 @@ function renderEmployees() {
       ${(() => {
         if (emp.rate === '' || emp.rate == null) return '';
         const preview = tax.computePay(emp, 40);
+        const legacyProbe = tax.computePay({ ...emp, w4Form: '2019', w4Allowances: emp.w4Allowances || 0, filingStatus: 'single' }, 40);
         const salaryNote =
           emp.payType === 'salary'
             ? ' Salary under $10,000 is the amount per paycheck (QuickBooks weekly pay). $10,000 or more is annual.'
             : '';
-        return `<p class="hint">At 40 hours / one paycheck: calculated FIT ${money(preview.federalComputed)} + extra ${money(preview.federalExtra)} = ${money(preview.federal)}.${salaryNote}</p>`;
+        let mapNote = '';
+        if (
+          !tax.usesLegacyW4(emp) &&
+          preview.federalComputed === 0 &&
+          legacyProbe.federalComputed > 0
+        ) {
+          mapNote = ` QuickBooks $21.58 + extra on a $9.00 × 40 week is Form W-4 2019 or earlier, Single (or Married withhold at single rate), 0 allowances — not 2020 Married Filing Jointly.`;
+        }
+        return `<p class="hint">At 40 hours / one paycheck: calculated FIT ${money(preview.federalComputed)} + extra ${money(preview.federalExtra)} = ${money(preview.federal)}.${salaryNote}${mapNote}</p>`;
       })()}
-      <p class="disclaimer">Federal withholding per IRS Pub 15-T (2026) percentage method, Worksheet 1A. Extra federal/state is added on top of calculated tax. Multiple jobs uses the Step 2 checkbox table. Virginia uses the employer formula after the $8,750 standard deduction.</p>
+      <p class="disclaimer">Federal withholding per IRS Pub 15-T (2026) Worksheet 1A. 2020 or later W-4 subtracts $8,600 ($12,900 if married filing jointly) then uses the percentage table. 2019 or earlier W-4 uses allowances × $4,300 and does not subtract that $8,600/$12,900 — that is the QuickBooks path that yields $21.58 calculated FIT on $9.00 × 40 hours (Single, 0 allowances) plus extra. Extra federal/state is added last.</p>
     </div>
 
     <div class="card">
@@ -722,6 +748,8 @@ function bindEmployees() {
     ['f-rate', (v) => (emp.rate = v === '' ? '' : Number(v))],
     ['f-payFrequency', (v) => (emp.payFrequency = v)],
     ['f-filingStatus', (v) => (emp.filingStatus = v)],
+    ['f-w4Form', (v) => (emp.w4Form = v)],
+    ['f-allowances', (v) => (emp.w4Allowances = Number(v) || 0)],
     ['f-dependents', (v) => (emp.w4Step3Dependents = Number(v) || 0)],
     ['f-extraFederal', (v) => (emp.extraFederal = Number(v) || 0)],
     ['f-extraState', (v) => (emp.extraState = Number(v) || 0)],
@@ -747,6 +775,7 @@ function bindEmployees() {
         const lab = document.getElementById('f-rate-label');
         if (lab) lab.textContent = emp.payType === 'salary' ? 'Salary (weekly paycheck or annual)' : 'Hourly rate';
       }
+      if (id === 'f-w4Form') render();
     });
   });
 
@@ -1023,11 +1052,18 @@ function payStatsHtml(calc) {
   const vaNote = `${money(calc.pay.stateComputed)} calculated + ${money(calc.pay.stateExtra)} extra`;
   const preview40 = tax.computePay(calc.emp, 40);
   let fitWhy = '';
+  const legacy40 = tax.computePay(
+    { ...calc.emp, w4Form: '2019', w4Allowances: calc.emp.w4Allowances || 0, filingStatus: 'single' },
+    40
+  );
   if (calc.pay.federalComputed === 0 && preview40.federalComputed > 0) {
     fitWhy =
       `This week’s taxable wages are ${money(calc.pay.taxable)}, so calculated FIT is $0.00. ` +
-      `QuickBooks’ repeating amount is a full 40-hour / salary paycheck: calculated ${money(preview40.federalComputed)} + extra ${money(preview40.federalExtra)} = ${money(preview40.federal)}. ` +
-      `Use Regular pay → Fill 40 hours, or enter the weekly paycheck as salary (example $835.00).`;
+      `A 40-hour week is calculated ${money(preview40.federalComputed)} + extra ${money(preview40.federalExtra)} = ${money(preview40.federal)}.`;
+  } else if (calc.pay.federalComputed === 0 && legacy40.federalComputed > 0 && !tax.usesLegacyW4(calc.emp)) {
+    fitWhy =
+      `2020 W-4 calculated FIT is $0.00 on ${money(calc.pay.taxable)} this week. ` +
+      `QuickBooks $64.58 on $9.00 × 40 hours is a 2019 W-4, Single (or Married withhold at single rate), 0 allowances: calculated ${money(legacy40.federalComputed)} + extra ${money(legacy40.federalExtra)} = ${money(legacy40.federal)}. Set Form W-4 to 2019 or earlier on the employee profile.`;
   } else if (calc.pay.federalComputed === 0) {
     fitWhy = `Pub 15-T calculated FIT is $0.00 on this period’s ${money(calc.pay.taxable)} wages. Extra is added on top.`;
   } else if (calc.pay.totalHours < 40 && preview40.federal !== calc.pay.federal) {

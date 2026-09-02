@@ -25,6 +25,7 @@
 
   const W4_STD_MFJ = 12900;
   const W4_STD_OTHER = 8600;
+  const W4_ALLOWANCE = 4300;
 
   const P15T_STANDARD = {
     single: [
@@ -282,6 +283,11 @@
     return hoursBreakdown(punches).totalHours;
   }
 
+  function usesLegacyW4(employee) {
+    const y = String((employee && employee.w4Form) || '2020').toLowerCase();
+    return y === '2019' || y === 'legacy' || y === 'pre2020';
+  }
+
   function filingKey(employee) {
     const raw = String((employee && employee.filingStatus) || 'single').toLowerCase().trim();
     if (raw === 'mfj' || raw === 'married' || raw.includes('joint')) return 'mfj';
@@ -307,25 +313,39 @@
     const line1a = Math.max(0, Number(taxableWages) || 0);
     const line1b = ppy || 52;
     const line1c = line1a * line1b;
-    const line1d = Math.max(0, Number(employee && employee.w4OtherIncome) || 0);
-    const line1e = line1c + line1d;
-    const line1f = Math.max(0, Number(employee && employee.w4Deductions) || 0);
-    const step2 = Boolean(employee && employee.multipleJobs);
-    const line1g = step2 ? 0 : filingKey(employee) === 'mfj' ? W4_STD_MFJ : W4_STD_OTHER;
-    const line1h = line1f + line1g;
-    const line1i = Math.max(0, line1e - line1h);
+    const extra = Math.max(0, Number(employee && employee.extraFederal) || 0);
+    const legacy = usesLegacyW4(employee);
+    let key = filingKey(employee);
+    if (legacy && key === 'hoh') key = 'single';
 
-    const key = filingKey(employee);
+    let line1d = 0;
+    let line1f = 0;
+    let line1g = 0;
+    let step2 = false;
+    let line1i = 0;
+    let line3a = 0;
+
+    if (legacy) {
+      const allowances = Math.max(0, Number(employee && employee.w4Allowances) || 0);
+      line1f = allowances * W4_ALLOWANCE;
+      line1i = Math.max(0, line1c - line1f);
+    } else {
+      line1d = Math.max(0, Number(employee && employee.w4OtherIncome) || 0);
+      const line1e = line1c + line1d;
+      line1f = Math.max(0, Number(employee && employee.w4Deductions) || 0);
+      step2 = Boolean(employee && employee.multipleJobs);
+      line1g = step2 ? 0 : key === 'mfj' ? W4_STD_MFJ : W4_STD_OTHER;
+      line1i = Math.max(0, line1e - line1f - line1g);
+      line3a = Math.max(0, Number(employee && employee.w4Step3Dependents) || 0);
+    }
+
     const table = step2
       ? P15T_STEP2_CHECKBOX[key] || P15T_STEP2_CHECKBOX.single
       : P15T_STANDARD[key] || P15T_STANDARD.single;
     const line2g = lookupAnnualTable(line1i, table);
     const line2h = line2g / line1b;
-
-    const line3a = Math.max(0, Number(employee && employee.w4Step3Dependents) || 0);
     const line3b = line3a / line1b;
     const tentative = Math.max(0, line2h - line3b);
-    const extra = Math.max(0, Number(employee && employee.extraFederal) || 0);
     return {
       tentative: round2(tentative),
       extra: round2(extra),
@@ -335,7 +355,7 @@
       line1c: round2(line1c),
       line1g: round2(line1g),
       line1i: round2(line1i),
-      table: `${key}:${step2 ? 'step2' : 'standard'}`
+      table: `${key}:${legacy ? 'w4-2019' : step2 ? 'step2' : 'standard'}`
     };
   }
 
@@ -457,6 +477,8 @@
     PERIODS,
     W4_STD_MFJ,
     W4_STD_OTHER,
+    W4_ALLOWANCE,
+    usesLegacyW4,
     round2,
     roundHours,
     periodsPerYear,
