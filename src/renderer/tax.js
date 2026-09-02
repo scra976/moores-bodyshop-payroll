@@ -162,13 +162,31 @@
     return endIso || startIso;
   }
 
-  function hourlyRate(employee) {
+  /**
+   * Salary pay for one period. QuickBooks weekly salary is the paycheck
+   * amount (e.g. $835). Annual figures are $10,000 or more and are divided
+   * by pay periods. Hourly employees are unchanged.
+   */
+  function salaryPeriodAmount(employee) {
     const rate = Number(employee && employee.rate) || 0;
+    if (!(employee && employee.payType === 'salary') || rate <= 0) return 0;
+    const ppy = periodsPerYear(employee.payFrequency);
+    if (rate < 10000) return round2(rate);
+    return ppy > 0 ? round2(rate / ppy) : 0;
+  }
+
+  function hourlyRate(employee) {
     if (employee && employee.payType === 'salary') {
-      const ppy = periodsPerYear(employee.payFrequency);
-      return ppy > 0 ? rate / (ppy * 40) : 0;
+      return salaryPeriodAmount(employee) / 40;
     }
-    return rate;
+    return Number(employee && employee.rate) || 0;
+  }
+
+  function isWeekdayIso(iso) {
+    const d = parseISODate(iso);
+    if (!d) return false;
+    const day = d.getDay();
+    return day !== 0 && day !== 6;
   }
 
   function punchHours(clockIn, clockOut) {
@@ -265,8 +283,9 @@
   }
 
   function filingKey(employee) {
-    const raw = (employee && employee.filingStatus) || 'single';
-    if (raw === 'mfj' || raw === 'hoh' || raw === 'single') return raw;
+    const raw = String((employee && employee.filingStatus) || 'single').toLowerCase().trim();
+    if (raw === 'mfj' || raw === 'married' || raw.includes('joint')) return 'mfj';
+    if (raw === 'hoh' || raw.includes('head')) return 'hoh';
     return 'single';
   }
 
@@ -310,7 +329,13 @@
     return {
       tentative: round2(tentative),
       extra: round2(extra),
-      total: round2(tentative + extra)
+      total: round2(tentative + extra),
+      line1a: round2(line1a),
+      line1b,
+      line1c: round2(line1c),
+      line1g: round2(line1g),
+      line1i: round2(line1i),
+      table: `${key}:${step2 ? 'step2' : 'standard'}`
     };
   }
 
@@ -355,16 +380,25 @@
 
   function computePay(employee, punchesOrHours, opts) {
     const breakdown = hoursBreakdown(punchesOrHours);
-    const hours = breakdown.totalHours;
     const ppy = periodsPerYear(employee && employee.payFrequency);
     const hourly = hourlyRate(employee);
-    const otHours = roundHours(Math.max(0, breakdown.regularHours - 40));
-    const straightHours = roundHours(Math.min(40, breakdown.regularHours));
+    const salaried = employee && employee.payType === 'salary';
+    let regularHours = breakdown.regularHours;
+    let vacationHours = breakdown.vacationHours;
+    let holidayHours = breakdown.holidayHours;
+    if (salaried) {
+      if (regularHours < 40) regularHours = 40;
+      vacationHours = 0;
+      holidayHours = 0;
+    }
+    const hours = roundHours(regularHours + vacationHours + holidayHours);
+    const otHours = roundHours(Math.max(0, regularHours - 40));
+    const straightHours = roundHours(Math.min(40, regularHours));
     const gross = round2(
       straightHours * hourly +
         otHours * hourly * 1.5 +
-        breakdown.vacationHours * hourly +
-        breakdown.holidayHours * hourly
+        vacationHours * hourly +
+        holidayHours * hourly
     );
     const pretax = round2(Math.max(0, Number(employee && employee.preTaxDeduction) || 0));
     const taxable = round2(Math.max(0, gross - pretax));
@@ -386,9 +420,9 @@
     return {
       hourly: round2(hourly),
       totalHours: hours,
-      regularHours: breakdown.regularHours,
-      vacationHours: breakdown.vacationHours,
-      holidayHours: breakdown.holidayHours,
+      regularHours,
+      vacationHours,
+      holidayHours,
       straightHours,
       otHours,
       gross,
@@ -397,6 +431,7 @@
       federal,
       federalComputed: fit.tentative,
       federalExtra: fit.extra,
+      federalWorksheet: fit,
       ss,
       medicare,
       additionalMedicare: addMed,
@@ -426,6 +461,8 @@
     roundHours,
     periodsPerYear,
     hourlyRate,
+    salaryPeriodAmount,
+    isWeekdayIso,
     punchHours,
     lunchHours,
     paidPunchHours,

@@ -545,7 +545,7 @@ function renderEmployees() {
         <div class="field"><label>Pay type</label>
           <select id="f-payType">${optionList(['hourly','salary'], emp.payType || 'hourly', { hourly: 'Hourly', salary: 'Salary' })}</select>
         </div>
-        <div class="field"><label id="f-rate-label">${emp.payType === 'salary' ? 'Annual salary' : 'Hourly rate'}</label>
+        <div class="field"><label id="f-rate-label">${emp.payType === 'salary' ? 'Salary (weekly paycheck or annual)' : 'Hourly rate'}</label>
           <input id="f-rate" type="number" min="0" step="0.01" value="${esc(emp.rate)}" />
         </div>
         <div class="field"><label>Pay frequency</label>
@@ -599,7 +599,16 @@ function renderEmployees() {
           <input id="f-vaE2" type="number" min="0" step="1" value="${esc(emp.vaE2 || 0)}" />
         </div>
       </div>
-      <p class="disclaimer">Federal withholding per IRS Pub 15-T (2026) percentage method, Worksheet 1A. Multiple jobs uses the Step 2 checkbox table. Virginia uses the employer formula after the $8,750 standard deduction. No local VA tax. No employee VA UI.</p>
+      ${(() => {
+        if (emp.rate === '' || emp.rate == null) return '';
+        const preview = tax.computePay(emp, 40);
+        const salaryNote =
+          emp.payType === 'salary'
+            ? ' Salary under $10,000 is the amount per paycheck (QuickBooks weekly pay). $10,000 or more is annual.'
+            : '';
+        return `<p class="hint">At 40 hours / one paycheck: calculated FIT ${money(preview.federalComputed)} + extra ${money(preview.federalExtra)} = ${money(preview.federal)}.${salaryNote}</p>`;
+      })()}
+      <p class="disclaimer">Federal withholding per IRS Pub 15-T (2026) percentage method, Worksheet 1A. Extra federal/state is added on top of calculated tax. Multiple jobs uses the Step 2 checkbox table. Virginia uses the employer formula after the $8,750 standard deduction.</p>
     </div>
 
     <div class="card">
@@ -736,7 +745,7 @@ function bindEmployees() {
       markDirty();
       if (id === 'f-payType') {
         const lab = document.getElementById('f-rate-label');
-        if (lab) lab.textContent = emp.payType === 'salary' ? 'Annual salary' : 'Hourly rate';
+        if (lab) lab.textContent = emp.payType === 'salary' ? 'Salary (weekly paycheck or annual)' : 'Hourly rate';
       }
     });
   });
@@ -875,7 +884,7 @@ function renderAdd() {
         <div class="field"><label>Pay type</label>
           <select id="a-payType">${optionList(['hourly','salary'], d.payType, { hourly: 'Hourly', salary: 'Salary' })}</select>
         </div>
-        <div class="field"><label id="a-rate-label">${d.payType === 'salary' ? 'Annual salary' : 'Hourly rate'}</label>
+        <div class="field"><label id="a-rate-label">${d.payType === 'salary' ? 'Salary (weekly paycheck or annual)' : 'Hourly rate'}</label>
           <input id="a-rate" type="number" min="0" step="0.01" value="${esc(d.rate)}" />
         </div>
         <div class="field"><label>Pay frequency</label>
@@ -913,7 +922,7 @@ function bindAdd() {
   bind('a-payType', (v) => {
     d.payType = v;
     const lab = document.getElementById('a-rate-label');
-    if (lab) lab.textContent = v === 'salary' ? 'Annual salary' : 'Hourly rate';
+    if (lab) lab.textContent = v === 'salary' ? 'Salary (weekly paycheck or annual)' : 'Hourly rate';
   });
   bind('a-rate', (v) => (d.rate = v === '' ? '' : Number(v)));
   bind('a-payFrequency', (v) => (d.payFrequency = v));
@@ -959,6 +968,14 @@ function emptyDayRow(iso) {
   };
 }
 
+function fillStandardWeekHours() {
+  (state.time.punches || []).forEach((row) => {
+    if ((row.payType || 'regular') !== 'regular') return;
+    row.hours = tax.isWeekdayIso(row.date) ? 8 : 0;
+    row.entryMode = 'hours';
+  });
+}
+
 function weekdayName(iso) {
   const d = tax.parseISODate(iso);
   return d ? ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()] : '';
@@ -1002,14 +1019,20 @@ function payStatsHtml(calc) {
   const bits = [];
   if (calc.pay.vacationHours) bits.push(`${hoursFmt(calc.pay.vacationHours)} vac`);
   if (calc.pay.holidayHours) bits.push(`${hoursFmt(calc.pay.holidayHours)} holiday`);
-  const fitNote =
-    calc.pay.federalExtra > 0
-      ? `${money(calc.pay.federalComputed)} calculated + ${money(calc.pay.federalExtra)} extra`
-      : '';
-  const vaNote =
-    calc.pay.stateExtra > 0
-      ? `${money(calc.pay.stateComputed)} calculated + ${money(calc.pay.stateExtra)} extra`
-      : '';
+  const fitNote = `${money(calc.pay.federalComputed)} calculated + ${money(calc.pay.federalExtra)} extra`;
+  const vaNote = `${money(calc.pay.stateComputed)} calculated + ${money(calc.pay.stateExtra)} extra`;
+  const preview40 = tax.computePay(calc.emp, 40);
+  let fitWhy = '';
+  if (calc.pay.federalComputed === 0 && preview40.federalComputed > 0) {
+    fitWhy =
+      `This week’s taxable wages are ${money(calc.pay.taxable)}, so calculated FIT is $0.00. ` +
+      `QuickBooks’ repeating amount is a full 40-hour / salary paycheck: calculated ${money(preview40.federalComputed)} + extra ${money(preview40.federalExtra)} = ${money(preview40.federal)}. ` +
+      `Use Regular pay → Fill 40 hours, or enter the weekly paycheck as salary (example $835.00).`;
+  } else if (calc.pay.federalComputed === 0) {
+    fitWhy = `Pub 15-T calculated FIT is $0.00 on this period’s ${money(calc.pay.taxable)} wages. Extra is added on top.`;
+  } else if (calc.pay.totalHours < 40 && preview40.federal !== calc.pay.federal) {
+    fitWhy = `At 40 hours this paycheck’s FIT would be ${money(preview40.federal)} (${money(preview40.federalComputed)} calculated + ${money(preview40.federalExtra)} extra).`;
+  }
   return `
       <div class="stats">
         <div class="stat"><div class="k">Straight</div><div class="v">${hoursFmt(calc.pay.straightHours)} h</div></div>
@@ -1019,14 +1042,15 @@ function payStatsHtml(calc) {
         <div class="stat"><div class="k">Net</div><div class="v pos">${money(calc.pay.net)}</div></div>
       </div>
       ${bits.length ? `<p class="hint">${esc(bits.join(' · '))}</p>` : ''}
+      ${fitWhy ? `<p class="disclaimer">${esc(fitWhy)}</p>` : ''}
       <div class="table-wrap">
         <table class="data">
           <thead><tr><th>FIT</th><th>SS</th><th>Med</th><th>VA</th><th>Pre-tax</th><th>Hourly</th></tr></thead>
           <tbody><tr>
-            <td>${money(calc.pay.federal)}${fitNote ? `<div class="hint">${esc(fitNote)}</div>` : ''}</td>
+            <td>${money(calc.pay.federal)}<div class="hint">${esc(fitNote)}</div></td>
             <td>${money(calc.pay.ss)}</td>
             <td>${money(calc.pay.medicare)}</td>
-            <td>${money(calc.pay.state)}${vaNote ? `<div class="hint">${esc(vaNote)}</div>` : ''}</td>
+            <td>${money(calc.pay.state)}<div class="hint">${esc(vaNote)}</div></td>
             <td>${money(calc.pay.pretax)}</td>
             <td>${money(calc.pay.hourly)}</td>
           </tr></tbody>
@@ -1194,9 +1218,16 @@ function renderTimeclocks() {
       </div>
       <p class="hint">${
         hoursMode
-          ? 'Enter hours for each day Wed–Tue. Overtime is hours over 40 in that window at 1.5×. Empty lunch is not used in this mode.'
-          : 'Paid hours = (clock out − clock in) − (lunch in − lunch out). Leave lunch blank for no lunch subtraction. Overnight shifts wrap past midnight.'
+          ? 'Enter hours for each day Wed–Tue, or Fill 40 hours for a repeating QuickBooks-style week. Overtime is hours over 40 in that window at 1.5×.'
+          : 'Paid hours = (clock out − clock in) − (lunch in − lunch out). Leave lunch blank for no lunch subtraction. Overnight shifts wrap past midnight. Salary still pays the full paycheck if clocks are empty.'
       }</p>
+      ${
+        hoursMode
+          ? `<div class="row-actions" style="margin-bottom:12px">
+              <button type="button" class="btn btn-secondary" id="tc-fill-40">Fill 40 hours</button>
+            </div>`
+          : ''
+      }
       <div class="table-wrap">${dayTable}</div>
       <div class="grid grid-2" style="margin-top:16px">
         <div class="field"><label>Vacation hours (taxable)</label>
@@ -1248,6 +1279,13 @@ function bindTimeclocks() {
       render();
     });
   });
+  const fill40 = document.getElementById('tc-fill-40');
+  if (fill40) {
+    fill40.addEventListener('click', () => {
+      fillStandardWeekHours();
+      render();
+    });
+  }
   const vac = document.getElementById('tc-vac');
   const hol = document.getElementById('tc-hol');
   const syncExtras = () => {

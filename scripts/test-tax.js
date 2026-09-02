@@ -142,4 +142,38 @@ assert(first.ss === 37.81 && first.medicare === 8.84, `first-period FICA ${first
 assert(first.net === 511.43, `first net ${first.net}`);
 assert(first.totalTaxes === 98.33, `first taxes ${first.totalTaxes}`);
 
-console.log('TAX_OK', { firstFit: first.federal, firstVa: first.state, firstNet: first.net, ficaNotes });
+const qbMfj = {
+  payType: 'hourly',
+  rate: 20.875,
+  payFrequency: 'weekly',
+  filingStatus: 'mfj',
+  vaWithhold: true,
+  multipleJobs: false,
+  w4Step3Dependents: 0,
+  extraFederal: 43,
+  extraState: 5,
+  preTaxDeduction: 0,
+  w4OtherIncome: 0,
+  w4Deductions: 0,
+  vaE1: 0,
+  vaE2: 0
+};
+const qb40 = tax.computePay(qbMfj, 40);
+assert(qb40.gross === 835, `QB 40h gross ${qb40.gross}`);
+assert(qb40.federalComputed === 21.58, `QB calculated FIT ${qb40.federalComputed}`);
+assert(qb40.federalExtra === 43, `QB extra ${qb40.federalExtra}`);
+assert(qb40.federal === 64.58, `QB FIT total ${qb40.federal} must be 21.58+43`);
+assert(qb40.stateComputed === 33.39, `QB VA calculated ${qb40.stateComputed}`);
+assert(qb40.stateExtra === 5, `QB VA extra ${qb40.stateExtra}`);
+assert(qb40.state === 38.39, `QB VA total ${qb40.state}`);
+
+const qbWeeklySalary = { ...qbMfj, payType: 'salary', rate: 835 };
+const qbSalEmpty = tax.computePay(qbWeeklySalary, 0);
+assert(qbSalEmpty.gross === 835, `weekly salary with 0 hours gross ${qbSalEmpty.gross}`);
+assert(qbSalEmpty.federal === 64.58, `weekly salary FIT ${qbSalEmpty.federal}`);
+const qbAnnualSalary = { ...qbMfj, payType: 'salary', rate: 43420 };
+const qbSalAnnual = tax.computePay(qbAnnualSalary, []);
+assert(qbSalAnnual.gross === 835, `annual salary gross ${qbSalAnnual.gross}`);
+assert(qbSalAnnual.federal === 64.58, `annual salary FIT ${qbSalAnnual.federal}`);
+
+console.log('TAX_OK', { firstFit: first.federal, firstVa: first.state, firstNet: first.net, qbFit: qb40.federal, ficaNotes });
