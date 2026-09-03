@@ -39,7 +39,9 @@ const state = {
     mode: 'punches',
     punches: [],
     vacationHours: '',
-    holidayHours: ''
+    holidayHours: '',
+    ptoHours: '',
+    loadedKey: ''
   },
   update: {
     phase: 'idle',
@@ -108,6 +110,31 @@ function payLabel(emp) {
   return bits.join(' · ');
 }
 
+function syncLeaveBalances(emp) {
+  if (!emp) return emp;
+  return tax.ensureLeaveBalances(emp, state.settings || {}, new Date());
+}
+
+function syncAllLeaveBalances() {
+  let changed = false;
+  for (const emp of state.data.employees || []) {
+    const beforeVac = emp.vacationHoursBalance;
+    const beforePto = emp.ptoHoursBalance;
+    const beforeY = emp.vacationYear;
+    const beforePy = emp.ptoYear;
+    syncLeaveBalances(emp);
+    if (
+      beforeVac !== emp.vacationHoursBalance ||
+      beforePto !== emp.ptoHoursBalance ||
+      beforeY !== emp.vacationYear ||
+      beforePy !== emp.ptoYear
+    ) {
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 function sortEmployees(list) {
   return [...(list || [])].sort((a, b) => {
     const ln = String(a.lastName || '').localeCompare(String(b.lastName || ''));
@@ -172,9 +199,11 @@ function hoursCell(w) {
   const reg = Number(w.regularHours);
   const vac = Number(w.vacationHours);
   const hol = Number(w.holidayHours);
+  const pto = Number(w.ptoHours);
   const ot = Number(w.otHours);
   if (reg) parts.push(hoursFmt(reg));
   if (vac) parts.push(`${hoursFmt(vac)} vac`);
+  if (pto) parts.push(`${hoursFmt(pto)} PTO`);
   if (hol) parts.push(`${hoursFmt(hol)} holiday`);
   if (ot) parts.push(`${hoursFmt(ot)} OT`);
   if (parts.length) return parts.join(' + ');
@@ -242,6 +271,12 @@ function emptyEmployee() {
     vaFilingStatus: 'single',
     vaE1: 1,
     vaE2: 0,
+    childSupport: 0,
+    garnishments: 0,
+    vacationHoursBalance: '',
+    ptoHoursBalance: '',
+    vacationYear: 0,
+    ptoYear: 0,
     paymentMethod: 'check',
     accountLast4: '',
     payweeks: []
@@ -456,6 +491,7 @@ function renderEmployees() {
   }
   if (!state.selectedId && list[0]) state.selectedId = list[0].id;
   const emp = selectedEmployee();
+  if (emp) syncLeaveBalances(emp);
   const archivedCount = (state.data.employees || []).filter(isArchived).length;
 
   if (!emp) {
@@ -514,6 +550,7 @@ function renderEmployees() {
         <div class="profile-copy">
           <h2>${esc(fullName(emp) || 'Employee')}</h2>
           <p>${esc(payLabel(emp) || 'Add a job title and pay rate')}</p>
+          <p>Vacation ${hoursFmt(emp.vacationHoursBalance)} h remaining · PTO ${hoursFmt(emp.ptoHoursBalance)} h remaining</p>
         </div>
         <span class="badge ${statusBadge}">${esc(emp.status || 'Active')}</span>
       </div>
@@ -669,6 +706,33 @@ function renderEmployees() {
     </div>
 
     <div class="card">
+      <div class="section-title">Child support / garnishments</div>
+      <p class="hint">Amounts per paycheck, taken from net after taxes. Child support is applied first.</p>
+      <div class="grid grid-2">
+        <div class="field"><label>Child support per paycheck</label>
+          <input id="f-childSupport" type="number" min="0" step="0.01" value="${esc(emp.childSupport || 0)}" />
+        </div>
+        <div class="field"><label>Other garnishments per paycheck</label>
+          <input id="f-garnishments" type="number" min="0" step="0.01" value="${esc(emp.garnishments || 0)}" />
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="section-title">Vacation / PTO</div>
+      <p class="hint">Balances reset to the company default every January 1. Time clocks vacation or PTO hours come off this remaining balance when you transfer the week.</p>
+      <div class="grid grid-2">
+        <div class="field"><label>Vacation hours remaining (${esc(String(emp.vacationYear || tax.leaveYear()))})</label>
+          <input id="f-vacBal" type="number" min="0" step="0.01" value="${esc(emp.vacationHoursBalance)}" />
+        </div>
+        <div class="field"><label>PTO hours remaining (${esc(String(emp.ptoYear || tax.leaveYear()))})</label>
+          <input id="f-ptoBal" type="number" min="0" step="0.01" value="${esc(emp.ptoHoursBalance)}" />
+        </div>
+      </div>
+      <p class="hint">Company default this year: ${hoursFmt((state.settings && state.settings.vacationHoursPerYear) || 0)} vacation · ${hoursFmt((state.settings && state.settings.ptoHoursPerYear) || 0)} PTO. Change the default in Settings.</p>
+    </div>
+
+    <div class="card">
       <div class="section-title">Payment method <span class="badge badge-req">Required to pay</span></div>
       <div class="grid grid-3">
         <div class="field"><label>Method</label>
@@ -790,6 +854,10 @@ function bindEmployees() {
     ['f-vaFilingStatus', (v) => (emp.vaFilingStatus = v)],
     ['f-vaE1', (v) => (emp.vaE1 = Number(v) || 0)],
     ['f-vaE2', (v) => (emp.vaE2 = Number(v) || 0)],
+    ['f-childSupport', (v) => (emp.childSupport = Number(v) || 0)],
+    ['f-garnishments', (v) => (emp.garnishments = Number(v) || 0)],
+    ['f-vacBal', (v) => (emp.vacationHoursBalance = Number(v) || 0)],
+    ['f-ptoBal', (v) => (emp.ptoHoursBalance = Number(v) || 0)],
     ['f-accountLast4', (v) => (emp.accountLast4 = digits(v).slice(0, 4))]
   ];
 
@@ -1006,6 +1074,7 @@ function bindAdd() {
     const emp = JSON.parse(JSON.stringify(d));
     emp.rate = Number(emp.rate);
     emp.payweeks = [];
+    syncLeaveBalances(emp);
     state.data.employees.push(emp);
     try {
       await persist();
@@ -1052,10 +1121,12 @@ function ensureWeekRows(period, punches) {
   const byDate = {};
   let vacationHours = 0;
   let holidayHours = 0;
+  let ptoHours = 0;
   for (const p of punches || []) {
     const kind = p.payType || 'regular';
     if (kind === 'vacation') vacationHours += tax.rowHours(p);
     else if (kind === 'holiday') holidayHours += tax.rowHours(p);
+    else if (kind === 'pto') ptoHours += tax.rowHours(p);
     else if (p.date) byDate[p.date] = p;
   }
   const rows = days.map((iso) => {
@@ -1076,7 +1147,8 @@ function ensureWeekRows(period, punches) {
   return {
     rows,
     vacationHours: tax.roundHours(vacationHours),
-    holidayHours: tax.roundHours(holidayHours)
+    holidayHours: tax.roundHours(holidayHours),
+    ptoHours: tax.roundHours(ptoHours)
   };
 }
 
@@ -1084,7 +1156,10 @@ function payStatsHtml(calc) {
   if (!calc) return '<p class="muted">Select an employee to estimate pay.</p>';
   const bits = [];
   if (calc.pay.vacationHours) bits.push(`${hoursFmt(calc.pay.vacationHours)} vac`);
+  if (calc.pay.ptoHours) bits.push(`${hoursFmt(calc.pay.ptoHours)} PTO`);
   if (calc.pay.holidayHours) bits.push(`${hoursFmt(calc.pay.holidayHours)} holiday`);
+  if (calc.pay.childSupport) bits.push(`${money(calc.pay.childSupport)} child support`);
+  if (calc.pay.garnishments) bits.push(`${money(calc.pay.garnishments)} garnishment`);
   const fitNote = `${money(calc.pay.federalComputed)} calculated + ${money(calc.pay.federalExtra)} extra`;
   const vaNote = `${money(calc.pay.stateComputed)} calculated + ${money(calc.pay.stateExtra)} extra`;
   const preview40 = tax.computePay(calc.emp, 40);
@@ -1118,13 +1193,14 @@ function payStatsHtml(calc) {
       ${fitWhy ? `<p class="disclaimer">${esc(fitWhy)}</p>` : ''}
       <div class="table-wrap">
         <table class="data">
-          <thead><tr><th>FIT</th><th>SS</th><th>Med</th><th>VA</th><th>Pre-tax</th><th>Hourly</th></tr></thead>
+          <thead><tr><th>FIT</th><th>SS</th><th>Med</th><th>VA</th><th>Pre-tax</th><th>Garnish</th><th>Hourly</th></tr></thead>
           <tbody><tr>
             <td>${money(calc.pay.federal)}<div class="hint">${esc(fitNote)}</div></td>
             <td>${money(calc.pay.ss)}</td>
             <td>${money(calc.pay.medicare)}</td>
             <td>${money(calc.pay.state)}<div class="hint">${esc(vaNote)}</div></td>
             <td>${money(calc.pay.pretax)}</td>
+            <td>${money((calc.pay.childSupport || 0) + (calc.pay.garnishments || 0))}</td>
             <td>${money(calc.pay.hourly)}</td>
           </tr></tbody>
         </table>
@@ -1153,6 +1229,10 @@ function loadPunchesForWeek() {
       existing.holidayHours != null && existing.holidayHours !== ''
         ? existing.holidayHours
         : packed.holidayHours || '';
+    state.time.ptoHours =
+      existing.ptoHours != null && existing.ptoHours !== ''
+        ? existing.ptoHours
+        : packed.ptoHours || '';
     if (existing.dayHours && typeof existing.dayHours === 'object') {
       state.time.punches.forEach((row) => {
         if (existing.dayHours[row.date] != null && existing.dayHours[row.date] !== '') {
@@ -1165,7 +1245,9 @@ function loadPunchesForWeek() {
     state.time.punches = packed.rows;
     state.time.vacationHours = '';
     state.time.holidayHours = '';
+    state.time.ptoHours = '';
   }
+  state.time.loadedKey = `${state.time.employeeId || ''}|${period.periodEnd}`;
 }
 
 function ensureTimeDefaults() {
@@ -1182,10 +1264,13 @@ function ensureTimeDefaults() {
     state.time.employeeId = '';
   }
   const period = periodFromEnd(state.time.periodEnd);
-  const days = tax.periodDays(period.periodStart, period.periodEnd);
-  if (!state.time.punches.length || state.time.punches.length !== days.length) {
+  const key = `${state.time.employeeId || ''}|${period.periodEnd}`;
+  if (state.time.loadedKey !== key) {
     loadPunchesForWeek();
+    return;
   }
+  const packed = ensureWeekRows(period, state.time.punches);
+  state.time.punches = packed.rows;
 }
 
 function currentTimeInput() {
@@ -1193,6 +1278,7 @@ function currentTimeInput() {
   const packed = ensureWeekRows(period, state.time.punches);
   const vac = tax.roundHours(state.time.vacationHours);
   const hol = tax.roundHours(state.time.holidayHours);
+  const pto = tax.roundHours(state.time.ptoHours);
   if (state.time.mode === 'hours') {
     let regularHours = 0;
     for (const row of packed.rows) {
@@ -1201,18 +1287,21 @@ function currentTimeInput() {
     return {
       regularHours: tax.roundHours(regularHours),
       vacationHours: vac,
-      holidayHours: hol
+      holidayHours: hol,
+      ptoHours: pto
     };
   }
   const rows = packed.rows.map((row) => ({ ...row, entryMode: 'punches', payType: 'regular' }));
   if (vac) rows.push({ payType: 'vacation', hours: vac, date: period.periodStart });
   if (hol) rows.push({ payType: 'holiday', hours: hol, date: period.periodStart });
+  if (pto) rows.push({ payType: 'pto', hours: pto, date: period.periodStart });
   return rows;
 }
 
 function currentTimePay() {
   const emp = findEmployee(state.time.employeeId);
   if (!emp || isArchived(emp)) return null;
+  syncLeaveBalances(emp);
   const period = periodFromEnd(state.time.periodEnd);
   const ytd = ytdGrossBefore(emp, period.payday, period.periodEnd);
   const pay = tax.computePay(emp, currentTimeInput(), { ytdGross: ytd });
@@ -1302,9 +1391,14 @@ function renderTimeclocks() {
           : ''
       }
       <div class="table-wrap">${dayTable}</div>
-      <div class="grid grid-2" style="margin-top:16px">
+      <div class="grid grid-3" style="margin-top:16px">
         <div class="field"><label>Vacation hours (taxable)</label>
           <input id="tc-vac" type="number" min="0" step="0.01" value="${esc(state.time.vacationHours)}" />
+          <p class="hint">${emp && !archivedSelected ? `${hoursFmt(emp.vacationHoursBalance)} h remaining` : ''}</p>
+        </div>
+        <div class="field"><label>PTO hours (taxable)</label>
+          <input id="tc-pto" type="number" min="0" step="0.01" value="${esc(state.time.ptoHours)}" />
+          <p class="hint">${emp && !archivedSelected ? `${hoursFmt(emp.ptoHoursBalance)} h remaining` : ''}</p>
         </div>
         <div class="field"><label>Holiday hours (taxable)</label>
           <input id="tc-hol" type="number" min="0" step="0.01" value="${esc(state.time.holidayHours)}" />
@@ -1361,20 +1455,19 @@ function bindTimeclocks() {
   }
   const vac = document.getElementById('tc-vac');
   const hol = document.getElementById('tc-hol');
+  const pto = document.getElementById('tc-pto');
   const syncExtras = () => {
     if (vac) state.time.vacationHours = vac.value;
     if (hol) state.time.holidayHours = hol.value;
+    if (pto) state.time.ptoHours = pto.value;
     const stats = document.getElementById('tc-stats');
     if (stats) stats.innerHTML = payStatsHtml(currentTimePay());
   };
-  if (vac) {
-    vac.addEventListener('input', syncExtras);
-    vac.addEventListener('change', syncExtras);
-  }
-  if (hol) {
-    hol.addEventListener('input', syncExtras);
-    hol.addEventListener('change', syncExtras);
-  }
+  [vac, hol, pto].forEach((el) => {
+    if (!el) return;
+    el.addEventListener('input', syncExtras);
+    el.addEventListener('change', syncExtras);
+  });
   document.querySelectorAll('[data-punch]').forEach((row) => {
     const id = row.getAttribute('data-punch');
     const punch = state.time.punches.find((p) => p.id === id);
@@ -1426,8 +1519,22 @@ function bindTimeclocks() {
       const extraPunches = [];
       const vacHrs = tax.roundHours(state.time.vacationHours);
       const holHrs = tax.roundHours(state.time.holidayHours);
+      const ptoHrs = tax.roundHours(state.time.ptoHours);
       if (vacHrs) extraPunches.push({ id: uid('punch'), date: period.periodStart, payType: 'vacation', hours: vacHrs });
       if (holHrs) extraPunches.push({ id: uid('punch'), date: period.periodStart, payType: 'holiday', hours: holHrs });
+      if (ptoHrs) extraPunches.push({ id: uid('punch'), date: period.periodStart, payType: 'pto', hours: ptoHrs });
+      const prevWeek = existingIdx >= 0 ? emp.payweeks[existingIdx] : null;
+      if (vacHrs > tax.roundHours(emp.vacationHoursBalance) + tax.roundHours(prevWeek && prevWeek.vacationHours)) {
+        toast('Vacation hours exceed the remaining balance. Extra hours still pay, balance will go to 0.00.', 'err');
+      }
+      if (ptoHrs > tax.roundHours(emp.ptoHoursBalance) + tax.roundHours(prevWeek && prevWeek.ptoHours)) {
+        toast('PTO hours exceed the remaining balance. Extra hours still pay, balance will go to 0.00.', 'err');
+      }
+      tax.applyLeaveUsed(
+        emp,
+        { vacationHours: vacHrs, ptoHours: ptoHrs },
+        { vacationHours: prevWeek && prevWeek.vacationHours, ptoHours: prevWeek && prevWeek.ptoHours }
+      );
       const record = {
         periodStart: period.periodStart,
         periodEnd: period.periodEnd,
@@ -1439,6 +1546,7 @@ function bindTimeclocks() {
         regularHours: calc.pay.regularHours,
         vacationHours: calc.pay.vacationHours,
         holidayHours: calc.pay.holidayHours,
+        ptoHours: calc.pay.ptoHours,
         otHours: calc.pay.otHours,
         gross: calc.pay.gross,
         federal: calc.pay.federal,
@@ -1450,6 +1558,8 @@ function bindTimeclocks() {
         stateComputed: calc.pay.stateComputed,
         stateExtra: calc.pay.stateExtra,
         pretax: calc.pay.pretax,
+        childSupport: calc.pay.childSupport,
+        garnishments: calc.pay.garnishments,
         net: calc.pay.net,
         punches: JSON.parse(JSON.stringify(state.time.punches.concat(extraPunches)))
       };
@@ -1599,7 +1709,7 @@ function renderSettings() {
     updateDetail = `Version ${esc(u.info.version)} is available${size ? ' (' + esc(size) + ')' : ''}.`;
   }
   if (u.phase === 'downloading') updateDetail = `Downloading… ${Math.round(u.percent || 0)}%`;
-  if (u.phase === 'downloaded') updateDetail = 'Update downloaded. Restart to apply. Payroll data in AppData is not touched.';
+  if (u.phase === 'downloaded') updateDetail = 'Update downloaded. Restart applies it silently — no installer wizard. Payroll data in AppData is not touched.';
 
   const notes =
     u.info && u.info.releaseNotes
@@ -1615,8 +1725,17 @@ function renderSettings() {
         <div class="field"><label>App ID</label><input value="${esc((state.meta && state.meta.appId) || '')}" readonly /></div>
         <div class="field"><label>Channel</label><input value="stable" readonly /></div>
         <div class="field span-2"><label>Pay schedule</label><input value="Weekly · Wed–Tue · Paid Wednesday" readonly /></div>
+        <div class="field"><label>Default vacation hours / year</label>
+          <input id="s-vacHours" type="number" min="0" step="0.01" value="${esc((state.settings && state.settings.vacationHoursPerYear) || 0)}" />
+        </div>
+        <div class="field"><label>Default PTO hours / year</label>
+          <input id="s-ptoHours" type="number" min="0" step="0.01" value="${esc((state.settings && state.settings.ptoHoursPerYear) || 0)}" />
+        </div>
       </div>
-      <p class="hint">Period is Wednesday through Tuesday. Payday is the Wednesday after that Tuesday (example: 08/12/2026–08/18/2026 paid 08/19/2026). Regular, vacation, and holiday hours are all taxable at the hourly rate. Overtime is hours over 40 in that window at 1.5×. No local VA tax. No employee VA UI.</p>
+      <p class="hint">Period is Wednesday through Tuesday. Payday is the Wednesday after that Tuesday. Vacation and PTO balances reset to these defaults every January 1. Regular, vacation, PTO, and holiday hours are taxable. Overtime is hours over 40 in that window at 1.5×. No local VA tax. No employee VA UI.</p>
+      <div class="row-actions">
+        <button class="btn btn-secondary" id="btn-apply-leave">Apply this year’s defaults to all employees</button>
+      </div>
       <div class="row-actions">
         <button class="btn btn-secondary" id="btn-open-p15t">Open IRS Pub 15-T (2026)</button>
       </div>
@@ -1768,12 +1887,37 @@ function bindSettings() {
     }
   });
 
+  const applyLeave = document.getElementById('btn-apply-leave');
+  if (applyLeave) {
+    applyLeave.addEventListener('click', async () => {
+      try {
+        const vacationHoursPerYear = Number(document.getElementById('s-vacHours').value) || 0;
+        const ptoHoursPerYear = Number(document.getElementById('s-ptoHours').value) || 0;
+        state.settings = await api.saveSettings({ vacationHoursPerYear, ptoHoursPerYear });
+        const year = tax.leaveYear();
+        for (const emp of state.data.employees || []) {
+          emp.vacationHoursBalance = tax.roundHours(vacationHoursPerYear);
+          emp.ptoHoursBalance = tax.roundHours(ptoHoursPerYear);
+          emp.vacationYear = year;
+          emp.ptoYear = year;
+        }
+        await persist();
+        toast('Company leave defaults saved and applied to every employee.', 'ok');
+        render();
+      } catch {
+        toast('Could not apply leave defaults.', 'err');
+      }
+    });
+  }
+
   document.getElementById('btn-save-settings').addEventListener('click', async () => {
     try {
       const updateUrl = document.getElementById('s-updateUrl').value.trim();
       const checkOnStartup = document.getElementById('s-startup').value === 'on';
-      state.settings = await api.saveSettings({ updateUrl, checkOnStartup });
-      toast('Update settings saved.', 'ok');
+      const vacationHoursPerYear = Number(document.getElementById('s-vacHours').value) || 0;
+      const ptoHoursPerYear = Number(document.getElementById('s-ptoHours').value) || 0;
+      state.settings = await api.saveSettings({ updateUrl, checkOnStartup, vacationHoursPerYear, ptoHoursPerYear });
+      toast('Settings saved.', 'ok');
       render();
     } catch {
       toast('Could not save settings.', 'err');
@@ -1882,6 +2026,13 @@ async function boot() {
     state.meta = await api.getMeta();
     state.settings = await api.getSettings();
     state.data = await api.loadData();
+    if (syncAllLeaveBalances()) {
+      try {
+        await persist();
+      } catch {
+        /* keep working; next save will persist balances */
+      }
+    }
     const firstActive = activeEmployees()[0];
     if (!state.selectedId) state.selectedId = firstActive ? firstActive.id : null;
   } catch {

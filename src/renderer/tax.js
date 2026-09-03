@@ -129,7 +129,31 @@
   }
 
   function periodsPerYear(freq) {
-    return PERIODS[freq] || 52;
+    const key = String(freq || 'weekly').toLowerCase().trim();
+    return PERIODS[key] || 52;
+  }
+
+  function numericEmployee(employee) {
+    const e = employee && typeof employee === 'object' ? employee : {};
+    return {
+      ...e,
+      rate: e.rate === '' || e.rate == null ? 0 : Number(e.rate) || 0,
+      extraFederal: Number(e.extraFederal) || 0,
+      extraState: Number(e.extraState) || 0,
+      preTaxDeduction: Number(e.preTaxDeduction) || 0,
+      w4OtherIncome: Number(e.w4OtherIncome) || 0,
+      w4Deductions: Number(e.w4Deductions) || 0,
+      w4Step3Dependents: Number(e.w4Step3Dependents) || 0,
+      w4Allowances: Number(e.w4Allowances) || 0,
+      vaE1: Number(e.vaE1) || 0,
+      vaE2: Number(e.vaE2) || 0,
+      childSupport: Number(e.childSupport) || 0,
+      garnishments: Number(e.garnishments) || 0,
+      multipleJobs: e.multipleJobs === true || e.multipleJobs === 'yes' || e.multipleJobs === 'true',
+      vaWithhold: e.vaWithhold !== false && e.vaWithhold !== 'exempt',
+      payFrequency: String(e.payFrequency || 'weekly').toLowerCase(),
+      payType: e.payType === 'salary' ? 'salary' : 'hourly'
+    };
   }
 
   function pad2(n) {
@@ -255,7 +279,7 @@
   function rowHours(punch) {
     if (!punch) return 0;
     const kind = punch.payType || 'regular';
-    if (kind === 'vacation' || kind === 'holiday') {
+    if (kind === 'vacation' || kind === 'holiday' || kind === 'pto') {
       if (punch.hours !== '' && punch.hours != null) return roundHours(punch.hours);
     }
     if (punch.entryMode === 'hours') return roundHours(punch.hours);
@@ -265,41 +289,97 @@
   }
 
   function hoursBreakdown(punchesOrHours) {
-    if (typeof punchesOrHours === 'number') {
-      const h = roundHours(Math.max(0, punchesOrHours));
-      return { regularHours: h, vacationHours: 0, holidayHours: 0, totalHours: h };
+    if (typeof punchesOrHours === 'number' || (typeof punchesOrHours === 'string' && punchesOrHours.trim() !== '' && Number.isFinite(Number(punchesOrHours)))) {
+      const h = roundHours(Math.max(0, Number(punchesOrHours)));
+      return { regularHours: h, vacationHours: 0, holidayHours: 0, ptoHours: 0, totalHours: h };
     }
     if (punchesOrHours && !Array.isArray(punchesOrHours) && typeof punchesOrHours === 'object') {
       const regularHours = roundHours(punchesOrHours.regularHours || 0);
       const vacationHours = roundHours(punchesOrHours.vacationHours || 0);
       const holidayHours = roundHours(punchesOrHours.holidayHours || 0);
+      const ptoHours = roundHours(punchesOrHours.ptoHours || 0);
       return {
         regularHours,
         vacationHours,
         holidayHours,
-        totalHours: roundHours(regularHours + vacationHours + holidayHours)
+        ptoHours,
+        totalHours: roundHours(regularHours + vacationHours + holidayHours + ptoHours)
       };
     }
     const punches = Array.isArray(punchesOrHours) ? punchesOrHours : [];
     let regularHours = 0;
     let vacationHours = 0;
     let holidayHours = 0;
+    let ptoHours = 0;
     for (const p of punches) {
       const h = rowHours(p);
       const kind = p.payType || 'regular';
       if (kind === 'vacation') vacationHours += h;
       else if (kind === 'holiday') holidayHours += h;
+      else if (kind === 'pto') ptoHours += h;
       else regularHours += h;
     }
     regularHours = roundHours(regularHours);
     vacationHours = roundHours(vacationHours);
     holidayHours = roundHours(holidayHours);
+    ptoHours = roundHours(ptoHours);
     return {
       regularHours,
       vacationHours,
       holidayHours,
-      totalHours: roundHours(regularHours + vacationHours + holidayHours)
+      ptoHours,
+      totalHours: roundHours(regularHours + vacationHours + holidayHours + ptoHours)
     };
+  }
+
+  function leaveYear(now) {
+    const d = now instanceof Date ? now : new Date();
+    return d.getFullYear();
+  }
+
+  function companyLeaveDefaults(settings) {
+    return {
+      vacation: roundHours(Math.max(0, Number(settings && settings.vacationHoursPerYear) || 0)),
+      pto: roundHours(Math.max(0, Number(settings && settings.ptoHoursPerYear) || 0))
+    };
+  }
+
+  function ensureLeaveBalances(employee, settings, now) {
+    if (!employee || typeof employee !== 'object') return employee;
+    const year = leaveYear(now);
+    const defs = companyLeaveDefaults(settings);
+    if (employee.vacationYear !== year) {
+      employee.vacationHoursBalance = defs.vacation;
+      employee.vacationYear = year;
+    } else if (employee.vacationHoursBalance == null || employee.vacationHoursBalance === '') {
+      employee.vacationHoursBalance = defs.vacation;
+    } else {
+      employee.vacationHoursBalance = roundHours(employee.vacationHoursBalance);
+    }
+    if (employee.ptoYear !== year) {
+      employee.ptoHoursBalance = defs.pto;
+      employee.ptoYear = year;
+    } else if (employee.ptoHoursBalance == null || employee.ptoHoursBalance === '') {
+      employee.ptoHoursBalance = defs.pto;
+    } else {
+      employee.ptoHoursBalance = roundHours(employee.ptoHoursBalance);
+    }
+    return employee;
+  }
+
+  function applyLeaveUsed(employee, nextUsed, prevUsed) {
+    if (!employee) return employee;
+    const prevVac = roundHours(prevUsed && prevUsed.vacationHours);
+    const prevPto = roundHours(prevUsed && prevUsed.ptoHours);
+    const nextVac = roundHours(nextUsed && nextUsed.vacationHours);
+    const nextPto = roundHours(nextUsed && nextUsed.ptoHours);
+    employee.vacationHoursBalance = roundHours(
+      Math.max(0, roundHours(employee.vacationHoursBalance) + prevVac - nextVac)
+    );
+    employee.ptoHoursBalance = roundHours(
+      Math.max(0, roundHours(employee.ptoHoursBalance) + prevPto - nextPto)
+    );
+    return employee;
   }
 
   function totalPunchHours(punches) {
@@ -423,27 +503,21 @@
   }
 
   function computePay(employee, punchesOrHours, opts) {
+    employee = numericEmployee(employee);
     const breakdown = hoursBreakdown(punchesOrHours);
-    const ppy = periodsPerYear(employee && employee.payFrequency);
+    const ppy = periodsPerYear(employee.payFrequency);
     const hourly = hourlyRate(employee);
-    const salaried = employee && employee.payType === 'salary';
+    const salaried = employee.payType === 'salary';
     let regularHours = breakdown.regularHours;
-    let vacationHours = breakdown.vacationHours;
-    let holidayHours = breakdown.holidayHours;
-    if (salaried) {
-      if (regularHours < 40) regularHours = 40;
-      vacationHours = 0;
-      holidayHours = 0;
-    }
-    const hours = roundHours(regularHours + vacationHours + holidayHours);
+    const vacationHours = breakdown.vacationHours;
+    const holidayHours = breakdown.holidayHours;
+    const ptoHours = breakdown.ptoHours || 0;
+    if (salaried && regularHours < 40) regularHours = 40;
+    const hours = roundHours(regularHours + vacationHours + holidayHours + ptoHours);
     const otHours = roundHours(Math.max(0, regularHours - 40));
     const straightHours = roundHours(Math.min(40, regularHours));
-    const gross = round2(
-      straightHours * hourly +
-        otHours * hourly * 1.5 +
-        vacationHours * hourly +
-        holidayHours * hourly
-    );
+    const leavePay = salaried ? 0 : vacationHours * hourly + holidayHours * hourly + ptoHours * hourly;
+    const gross = round2(straightHours * hourly + otHours * hourly * 1.5 + leavePay);
     const pretax = round2(Math.max(0, Number(employee && employee.preTaxDeduction) || 0));
     const taxable = round2(Math.max(0, gross - pretax));
     const ytdGross = round2((opts && opts.ytdGross) || 0);
@@ -460,8 +534,13 @@
     const va = virginiaWithholding(employee, taxable, ppy);
     const federal = fit.total;
     const state = va.total;
-    const net = round2(gross - pretax - federal - ss - medicare - state);
     const totalTaxes = round2(federal + ss + medicare + state);
+    const afterTax = round2(gross - pretax - federal - ss - medicare - state);
+    const childSupportReq = round2(Math.max(0, Number(employee && employee.childSupport) || 0));
+    const garnishReq = round2(Math.max(0, Number(employee && employee.garnishments) || 0));
+    const childSupport = round2(Math.min(childSupportReq, Math.max(0, afterTax)));
+    const garnishments = round2(Math.min(garnishReq, Math.max(0, afterTax - childSupport)));
+    const net = round2(afterTax - childSupport - garnishments);
 
     return {
       hourly: round2(hourly),
@@ -469,6 +548,7 @@
       regularHours,
       vacationHours,
       holidayHours,
+      ptoHours,
       straightHours,
       otHours,
       gross,
@@ -484,6 +564,8 @@
       state,
       stateComputed: va.tentative,
       stateExtra: va.extra,
+      childSupport,
+      garnishments,
       totalTaxes,
       net,
       periodsPerYear: ppy,
@@ -522,6 +604,11 @@
     rowHours,
     hoursBreakdown,
     totalPunchHours,
+    leaveYear,
+    companyLeaveDefaults,
+    ensureLeaveBalances,
+    applyLeaveUsed,
+    numericEmployee,
     federalPub15T,
     virginiaWithholding,
     computePay,

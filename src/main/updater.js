@@ -5,7 +5,7 @@ const { autoUpdater } = require('electron-updater');
 const store = require('./store');
 
 const DEFAULT_URL = 'https://github.com/scra976/moores-bodyshop-payroll/releases/latest/download/';
-const USER_AGENT = 'MooresBodyShopPayroll/1.0.7';
+const USER_AGENT = 'MooresBodyShopPayroll/1.0.8';
 
 let mainWindow = null;
 let configured = false;
@@ -305,7 +305,7 @@ async function download() {
 function install() {
   ensureConfigured();
   setTimeout(() => {
-    autoUpdater.quitAndInstall(false, true);
+    autoUpdater.quitAndInstall(true, true);
   }, 200);
   return { ok: true };
 }

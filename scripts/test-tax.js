@@ -227,11 +227,38 @@ assert(nineQb.federalComputed === 21.58, `2019 Single 0 allowances calculated FI
 assert(nineQb.federalExtra === 43, `legacy extra ${nineQb.federalExtra}`);
 assert(nineQb.federal === 64.58, `QB $9/hour FIT ${nineQb.federal} must be 21.58+43`);
 
+const garnEmp = { ...wesley, childSupport: 40, garnishments: 10 };
+const garnPay = tax.computePay(garnEmp, 22);
+assert(garnPay.childSupport === 40, `child support ${garnPay.childSupport}`);
+assert(garnPay.garnishments === 10, `garnishments ${garnPay.garnishments}`);
+assert(garnPay.net === tax.round2(314.14 - 50), `garnish net ${garnPay.net} from 22h wesley 314.14-50`);
+
+const ptoPay = tax.computePay(wesley, { regularHours: 32, vacationHours: 4, ptoHours: 4 });
+assert(ptoPay.gross === 640, `pto+vac 40h gross ${ptoPay.gross}`);
+assert(ptoPay.vacationHours === 4 && ptoPay.ptoHours === 4, 'leave hours recorded');
+
+const leaveEmp = { vacationYear: 2025, vacationHoursBalance: 3, ptoYear: 2025, ptoHoursBalance: 1 };
+tax.ensureLeaveBalances(leaveEmp, { vacationHoursPerYear: 40, ptoHoursPerYear: 24 }, new Date('2026-01-02'));
+assert(leaveEmp.vacationYear === 2026 && leaveEmp.vacationHoursBalance === 40, `vac reset ${leaveEmp.vacationHoursBalance}`);
+assert(leaveEmp.ptoYear === 2026 && leaveEmp.ptoHoursBalance === 24, `pto reset ${leaveEmp.ptoHoursBalance}`);
+tax.applyLeaveUsed(leaveEmp, { vacationHours: 8, ptoHours: 2 }, null);
+assert(leaveEmp.vacationHoursBalance === 32, `vac after use ${leaveEmp.vacationHoursBalance}`);
+assert(leaveEmp.ptoHoursBalance === 22, `pto after use ${leaveEmp.ptoHoursBalance}`);
+
+const a = tax.computePay(wesley, 22);
+const b = tax.computePay({ ...wesley, extraFederal: '0', extraState: '0', vaE1: '0' }, '22');
+assert(a.federal === b.federal && a.state === b.state && a.gross === b.gross, 'same hours+employee always same FIT/VA');
+
+const strEmp = { ...wesley, extraFederal: '43', extraState: '5', childSupport: '12.5' };
+const strPay = tax.computePay(strEmp, 22);
+assert(strPay.federalExtra === 43 && strPay.stateExtra === 5 && strPay.childSupport === 12.5, 'string profile amounts coerce');
+
 console.log('TAX_OK', {
   firstFit: first.federal,
   firstVa: first.state,
   firstNet: first.net,
   qbFit: qb40.federal,
   nineQbFit: nineQb.federal,
+  garnNet: garnPay.net,
   ficaNotes
 });

@@ -47,7 +47,9 @@ function defaultSettings() {
     updateUrl: DEFAULT_UPDATE_URL,
     channel: 'stable',
     lastChecked: null,
-    checkOnStartup: false
+    checkOnStartup: false,
+    vacationHoursPerYear: 40,
+    ptoHoursPerYear: 40
   };
 }
 
@@ -490,11 +492,15 @@ function sanitizeSettings(patch) {
   next.updateUrl = next.updateUrl.trim();
   if (next.updateUrl && !next.updateUrl.endsWith('/')) next.updateUrl += '/';
   if ('lastChecked' in (patch || {})) next.lastChecked = patch.lastChecked;
+  const vac = Number(next.vacationHoursPerYear);
+  const pto = Number(next.ptoHoursPerYear);
   const allowed = {
     updateUrl: next.updateUrl,
     channel: next.channel,
     lastChecked: next.lastChecked ?? null,
-    checkOnStartup: next.checkOnStartup
+    checkOnStartup: next.checkOnStartup,
+    vacationHoursPerYear: Number.isFinite(vac) && vac >= 0 ? Math.round(vac * 100) / 100 : 40,
+    ptoHoursPerYear: Number.isFinite(pto) && pto >= 0 ? Math.round(pto * 100) / 100 : 40
   };
   return allowed;
 }
