@@ -92,6 +92,22 @@ function fullName(emp) {
   return [emp.firstName, emp.middleInitial, emp.lastName].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
 }
 
+function initials(emp) {
+  const a = String((emp && emp.firstName) || '').trim().charAt(0);
+  const b = String((emp && emp.lastName) || '').trim().charAt(0);
+  return ((a + b) || 'M').toUpperCase();
+}
+
+function payLabel(emp) {
+  if (!emp) return '';
+  const bits = [];
+  if (emp.jobTitle) bits.push(emp.jobTitle);
+  if (emp.payType === 'salary') bits.push(money(emp.rate) + (Number(emp.rate) < 10000 ? '/paycheck' : '/year'));
+  else if (emp.rate !== '' && emp.rate != null) bits.push(`${money(emp.rate)}/hr`);
+  bits.push(emp.payFrequency === 'weekly' ? 'Weekly' : emp.payFrequency || 'Weekly');
+  return bits.join(' · ');
+}
+
 function sortEmployees(list) {
   return [...(list || [])].sort((a, b) => {
     const ln = String(a.lastName || '').localeCompare(String(b.lastName || ''));
@@ -223,7 +239,8 @@ function emptyEmployee() {
     preTaxDeduction: 0,
     w4OtherIncome: 0,
     w4Deductions: 0,
-    vaE1: 0,
+    vaFilingStatus: 'single',
+    vaE1: 1,
     vaE2: 0,
     paymentMethod: 'check',
     accountLast4: '',
@@ -491,14 +508,21 @@ function renderEmployees() {
   const archived = isArchived(emp);
 
   return `
-    <div class="card">
+    <div class="card profile-card">
+      <div class="profile-hero">
+        <div class="avatar" aria-hidden="true">${esc(initials(emp))}</div>
+        <div class="profile-copy">
+          <h2>${esc(fullName(emp) || 'Employee')}</h2>
+          <p>${esc(payLabel(emp) || 'Add a job title and pay rate')}</p>
+        </div>
+        <span class="badge ${statusBadge}">${esc(emp.status || 'Active')}</span>
+      </div>
       <div class="toolbar">
         <div class="field">
           <label for="emp-select">Employee</label>
           <select id="emp-select">${employeeOptions(emp.id, false)}</select>
         </div>
         <label class="chip"><input type="checkbox" id="emp-show-archived"${state.showArchived ? ' checked' : ''} /> Show archived${archivedCount ? ` (${archivedCount})` : ''}</label>
-        <span class="badge ${statusBadge}">${esc(emp.status || 'Active')}</span>
       </div>
     </div>
 
@@ -584,6 +608,13 @@ function renderEmployees() {
         <div class="field"><label>Virginia / state withhold</label>
           <select id="f-vaWithhold">${optionList(['yes','exempt'], emp.vaWithhold === false ? 'exempt' : 'yes', { yes: 'Withhold VA', exempt: 'Exempt' })}</select>
         </div>
+        <div class="field"><label>Virginia filing status</label>
+          <select id="f-vaFilingStatus">${optionList(
+            ['single','married'],
+            tax.vaIsMarried(emp) ? 'married' : 'single',
+            { single: 'Single / married filing separately', married: 'Married filing jointly ($17,500 std. deduction)' }
+          )}</select>
+        </div>
         ${
           tax.usesLegacyW4(emp)
             ? `<div class="field"><label>W-4 allowances (2019 or earlier)</label>
@@ -634,7 +665,7 @@ function renderEmployees() {
         }
         return `<p class="hint">At 40 hours / one paycheck: calculated FIT ${money(preview.federalComputed)} + extra ${money(preview.federalExtra)} = ${money(preview.federal)}.${salaryNote}${mapNote}</p>`;
       })()}
-      <p class="disclaimer">Federal withholding per IRS Pub 15-T (2026) Worksheet 1A. 2020 or later W-4 subtracts $8,600 ($12,900 if married filing jointly) then uses the percentage table. 2019 or earlier W-4 uses allowances × $4,300 and does not subtract that $8,600/$12,900 — that is the QuickBooks path that yields $21.58 calculated FIT on $9.00 × 40 hours (Single, 0 allowances) plus extra. Extra federal/state is added last.</p>
+      <p class="disclaimer">Federal: IRS Pub 15-T (2026) Worksheet 1A. Extra withholding is added last. Virginia: $8,750 single or $17,500 married filing jointly, then VA-4 exemptions.</p>
     </div>
 
     <div class="card">
@@ -681,7 +712,7 @@ function renderEmployees() {
           <tbody>${payweekRows}</tbody>
         </table>
       </div>
-      <p class="disclaimer">Federal withholding per IRS Pub 15-T (2026) Worksheet 1A. Virginia formula after the $8,750 standard deduction. Historical rows are not recalculated unless you transfer that period again.</p>
+      <p class="disclaimer">Federal withholding per IRS Pub 15-T (2026) Worksheet 1A. Virginia uses $8,750 (single) or $17,500 (married filing jointly), plus VA-4 exemptions. Historical rows are not recalculated unless you transfer that period again.</p>
     </div>`;
 }
 
@@ -756,6 +787,7 @@ function bindEmployees() {
     ['f-pretax', (v) => (emp.preTaxDeduction = Number(v) || 0)],
     ['f-w4other', (v) => (emp.w4OtherIncome = Number(v) || 0)],
     ['f-w4deductions', (v) => (emp.w4Deductions = Number(v) || 0)],
+    ['f-vaFilingStatus', (v) => (emp.vaFilingStatus = v)],
     ['f-vaE1', (v) => (emp.vaE1 = Number(v) || 0)],
     ['f-vaE2', (v) => (emp.vaE2 = Number(v) || 0)],
     ['f-accountLast4', (v) => (emp.accountLast4 = digits(v).slice(0, 4))]
@@ -776,6 +808,11 @@ function bindEmployees() {
         if (lab) lab.textContent = emp.payType === 'salary' ? 'Salary (weekly paycheck or annual)' : 'Hourly rate';
       }
       if (id === 'f-w4Form') render();
+      if (id === 'f-filingStatus') {
+        emp.vaFilingStatus = emp.filingStatus === 'mfj' ? 'married' : 'single';
+        const vaSel = document.getElementById('f-vaFilingStatus');
+        if (vaSel) vaSel.value = emp.vaFilingStatus;
+      }
     });
   });
 
@@ -1277,7 +1314,7 @@ function renderTimeclocks() {
     <div class="card">
       <div class="section-title">Estimated pay</div>
       ${stats}
-      <p class="disclaimer">Federal withholding per IRS Pub 15-T (2026) Worksheet 1A. Extra federal/state is added on top of calculated tax, never a replacement. Social Security 6.2% up to $${esc(String(tax.SS_WAGE_BASE))} YTD. Medicare 1.45%. Virginia after $8,750 standard deduction. No local VA tax. No employee VA UI.</p>
+      <p class="disclaimer">Federal withholding per IRS Pub 15-T (2026) Worksheet 1A. Extra federal/state is added on top of calculated tax, never a replacement. Social Security 6.2% up to $${esc(String(tax.SS_WAGE_BASE))} YTD. Medicare 1.45% (rounded up to the cent when the leftover mill is 0.4 or more). Virginia $8,750 single / $17,500 married, then VA-4 exemptions. No local VA tax. No employee VA UI.</p>
       <div class="row-actions">
         <button class="btn btn-primary" id="tc-transfer"${calc && !archivedSelected ? '' : ' disabled'}>Transfer to profile</button>
       </div>
@@ -1531,7 +1568,7 @@ function renderPayroll() {
           <tbody>${body}</tbody>
         </table>
       </div>
-      <p class="disclaimer">Federal withholding per IRS Pub 15-T (2026) Worksheet 1A. Virginia formula after the $8,750 standard deduction. Stored historical payweeks are not recalculated here.</p>
+      <p class="disclaimer">Federal withholding per IRS Pub 15-T (2026) Worksheet 1A. Virginia $8,750 single / $17,500 married. Stored historical payweeks are not recalculated here.</p>
     </div>`;
 }
 

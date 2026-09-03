@@ -141,6 +141,25 @@ const first = tax.computePay(wesley, { regularHours: 30.11, holidayHours: 8 }, {
 assert(first.ss === 37.81 && first.medicare === 8.84, `first-period FICA ${first.ss} ${first.medicare}`);
 assert(first.net === 511.43, `first net ${first.net}`);
 assert(first.totalTaxes === 98.33, `first taxes ${first.totalTaxes}`);
+assert(tax.roundUp2(3.944) === 3.95, `Medicare mill leftover rounds up ${tax.roundUp2(3.944)}`);
+assert(tax.roundUp2(8.84152) === 8.84, `Medicare 8.84152 stays 8.84, got ${tax.roundUp2(8.84152)}`);
+assert(tax.VA_STD_DED_MFJ === 17500, 'VA married standard deduction');
+assert(tax.vaStandardDeduction({ filingStatus: 'single' }) === 8750, 'VA single std');
+assert(tax.vaStandardDeduction({ filingStatus: 'mfj' }) === 17500, 'VA mfj std');
+assert(tax.vaStandardDeduction({ filingStatus: 'single', vaFilingStatus: 'married' }) === 17500, 'VA status override');
+
+const mfjVaEmp = {
+  payType: 'hourly',
+  rate: 20.875,
+  payFrequency: 'weekly',
+  filingStatus: 'mfj',
+  vaWithhold: true,
+  extraFederal: 0,
+  extraState: 0
+};
+const mfjVa = tax.computePay(mfjVaEmp, 40);
+assert(mfjVa.gross === 835, `MFJ 40h gross ${mfjVa.gross}`);
+assert(mfjVa.state === 23.71, `MFJ VA after $17,500 std ${mfjVa.state}`);
 
 const qbMfj = {
   payType: 'hourly',
@@ -163,9 +182,9 @@ assert(qb40.gross === 835, `QB 40h gross ${qb40.gross}`);
 assert(qb40.federalComputed === 21.58, `QB calculated FIT ${qb40.federalComputed}`);
 assert(qb40.federalExtra === 43, `QB extra ${qb40.federalExtra}`);
 assert(qb40.federal === 64.58, `QB FIT total ${qb40.federal} must be 21.58+43`);
-assert(qb40.stateComputed === 33.39, `QB VA calculated ${qb40.stateComputed}`);
+assert(qb40.stateComputed === 23.71, `QB VA calculated ${qb40.stateComputed}`);
 assert(qb40.stateExtra === 5, `QB VA extra ${qb40.stateExtra}`);
-assert(qb40.state === 38.39, `QB VA total ${qb40.state}`);
+assert(qb40.state === 28.71, `QB VA total ${qb40.state}`);
 
 const qbWeeklySalary = { ...qbMfj, payType: 'salary', rate: 835 };
 const qbSalEmpty = tax.computePay(qbWeeklySalary, 0);

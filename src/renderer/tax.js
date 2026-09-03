@@ -13,6 +13,7 @@
   const ADD_MEDICARE_RATE = 0.009;
   const ADD_MEDICARE_THRESHOLD = 200000;
   const VA_STD_DED = 8750;
+  const VA_STD_DED_MFJ = 17500;
   const VA_E1 = 930;
   const VA_E2 = 800;
 
@@ -97,6 +98,28 @@
     const x = Number(n);
     if (!Number.isFinite(x)) return 0;
     return Math.round(x * 100 + 1e-8) / 100;
+  }
+
+  /** Nearest cent, rounding up when the leftover mill is 0.4 or more (QuickBooks Medicare 1¢). */
+  function roundUp2(n) {
+    const x = Number(n);
+    if (!Number.isFinite(x) || x <= 0) return 0;
+    const cents = x * 100;
+    const floor = Math.floor(cents + 1e-9);
+    const frac = cents - floor;
+    if (frac >= 0.4 - 1e-9) return (floor + 1) / 100;
+    return floor / 100;
+  }
+
+  function vaIsMarried(employee) {
+    const v = String((employee && employee.vaFilingStatus) || '').toLowerCase().trim();
+    if (v === 'married' || v === 'mfj' || v.includes('joint')) return true;
+    if (v === 'single' || v === 'mfs' || v === 'separate' || v === 'hoh') return false;
+    return filingKey(employee) === 'mfj';
+  }
+
+  function vaStandardDeduction(employee) {
+    return vaIsMarried(employee) ? VA_STD_DED_MFJ : VA_STD_DED;
   }
 
   function roundHours(n) {
@@ -369,7 +392,8 @@
     const periods = ppy || 52;
     const e1 = Math.max(0, Number(employee && employee.vaE1) || 0);
     const e2 = Math.max(0, Number(employee && employee.vaE2) || 0);
-    const T = g * periods - (VA_STD_DED + e1 * VA_E1 + e2 * VA_E2);
+    const std = vaStandardDeduction(employee);
+    const T = g * periods - (std + e1 * VA_E1 + e2 * VA_E2);
     let W = 0;
     if (T > 0) {
       if (T <= 3000) W = 0.02 * T;
@@ -426,9 +450,11 @@
 
     const ssWages = Math.min(gross, Math.max(0, SS_WAGE_BASE - ytdGross));
     const ss = round2(ssWages * SS_RATE);
-    const medicareBase = round2(gross * MEDICARE_RATE);
+    const medicareYtdBefore = roundUp2(ytdGross * MEDICARE_RATE);
+    const medicareYtdAfter = roundUp2((ytdGross + gross) * MEDICARE_RATE);
+    const medicareRegular = round2(Math.max(0, medicareYtdAfter - medicareYtdBefore));
     const addMed = additionalMedicare(ytdGross, gross);
-    const medicare = round2(medicareBase + addMed);
+    const medicare = round2(medicareRegular + addMed);
 
     const fit = federalPub15T(employee, taxable, ppy);
     const va = virginiaWithholding(employee, taxable, ppy);
@@ -472,6 +498,7 @@
     ADD_MEDICARE_RATE,
     ADD_MEDICARE_THRESHOLD,
     VA_STD_DED,
+    VA_STD_DED_MFJ,
     VA_E1,
     VA_E2,
     PERIODS,
@@ -480,7 +507,10 @@
     W4_ALLOWANCE,
     usesLegacyW4,
     round2,
+    roundUp2,
     roundHours,
+    vaIsMarried,
+    vaStandardDeduction,
     periodsPerYear,
     hourlyRate,
     salaryPeriodAmount,
