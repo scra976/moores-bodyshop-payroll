@@ -34,6 +34,10 @@ function backupsDir() {
   return path.join(dataRoot(), 'backups');
 }
 
+function reportsDir() {
+  return path.join(dataRoot(), 'reports');
+}
+
 function encryptionAvailable() {
   try {
     return Boolean(safeStorage.isEncryptionAvailable());
@@ -49,7 +53,10 @@ function defaultSettings() {
     lastChecked: null,
     checkOnStartup: false,
     vacationHoursPerYear: 40,
-    ptoHoursPerYear: 40
+    ptoHoursPerYear: 40,
+    ein: '',
+    vaAccount: '',
+    vaUiAccount: ''
   };
 }
 
@@ -60,172 +67,14 @@ function seedData() {
       name: "Moore's Body Shop",
       address: { ...DEFAULT_ADDRESS }
     },
-    employees: [
-      {
-        id: 'emp-seed-alex-harper',
-        firstName: 'Alex',
-        middleInitial: 'J',
-        lastName: 'Harper',
-        email: '',
-        phone: '',
-        ssn: '',
-        hireDate: '2026-09-01',
-        address: { ...DEFAULT_ADDRESS },
-        workLocationState: 'VA',
-        jobTitle: 'Technician',
-        department: 'Shop',
-        employmentType: 'Full-time',
-        manager: '',
-        status: 'Active',
-        filingStatus: 'single',
-        payType: 'hourly',
-        rate: 22.5,
-        payFrequency: 'weekly',
-        vaWithhold: true,
-        w4Step3Dependents: 0,
-        extraFederal: 0,
-        extraState: 0,
-        multipleJobs: false,
-        preTaxDeduction: 0,
-        paymentMethod: 'check',
-        accountLast4: '',
-        vaE1: 0,
-        vaE2: 0,
-        payweeks: []
-      },
-      {
-        id: 'emp-seed-wesley-carroll',
-        firstName: 'Wesley',
-        middleInitial: 'K',
-        lastName: 'Carroll',
-        email: '',
-        phone: '',
-        ssn: '',
-        hireDate: '2026-01-01',
-        address: { ...DEFAULT_ADDRESS },
-        workLocationState: 'VA',
-        jobTitle: 'Technician',
-        department: 'Shop',
-        employmentType: 'Full-time',
-        manager: '',
-        status: 'Active',
-        filingStatus: 'single',
-        payType: 'hourly',
-        rate: 16,
-        payFrequency: 'weekly',
-        vaWithhold: true,
-        w4Step3Dependents: 0,
-        extraFederal: 0,
-        extraState: 0,
-        multipleJobs: false,
-        preTaxDeduction: 0,
-        paymentMethod: 'check',
-        accountLast4: '',
-        vaE1: 0,
-        vaE2: 0,
-        payweeks: [
-          {
-            periodStart: '2026-07-01',
-            periodEnd: '2026-07-07',
-            payday: '2026-07-08',
-            weekEnding: '2026-07-07',
-            hours: 38.11,
-            regularHours: 30.11,
-            holidayHours: 8,
-            vacationHours: 0,
-            otHours: 0,
-            gross: 609.76,
-            federal: 31.25,
-            ss: 37.81,
-            medicare: 8.84,
-            state: 20.43,
-            net: 511.43,
-            punches: [
-              { id: 'punch-seed-wk-0701', date: '2026-07-01', payType: 'regular', hours: 30.11, clockIn: '', clockOut: '' },
-              { id: 'punch-seed-wk-hol', date: '2026-07-03', payType: 'holiday', hours: 8, clockIn: '', clockOut: '' }
-            ]
-          },
-          {
-            periodStart: '2026-08-05',
-            periodEnd: '2026-08-11',
-            payday: '2026-08-12',
-            weekEnding: '2026-08-11',
-            hours: 29.29,
-            regularHours: 29.29,
-            holidayHours: 0,
-            vacationHours: 0,
-            otHours: 0,
-            gross: 468.64,
-            federal: 15.9,
-            ss: 29.06,
-            medicare: 6.79,
-            state: 12.52,
-            net: 404.37,
-            punches: [{ id: 'punch-seed-wk-0805', date: '2026-08-05', payType: 'regular', hours: 29.29, clockIn: '', clockOut: '' }]
-          },
-          {
-            periodStart: '2026-08-12',
-            periodEnd: '2026-08-18',
-            payday: '2026-08-19',
-            weekEnding: '2026-08-18',
-            hours: 19.34,
-            regularHours: 19.34,
-            holidayHours: 0,
-            vacationHours: 0,
-            otHours: 0,
-            gross: 309.44,
-            federal: 0,
-            ss: 19.18,
-            medicare: 4.49,
-            state: 4.56,
-            net: 281.21,
-            punches: [{ id: 'punch-seed-wk-0812', date: '2026-08-12', payType: 'regular', hours: 19.34, clockIn: '', clockOut: '' }]
-          },
-          {
-            periodStart: '2026-08-19',
-            periodEnd: '2026-08-25',
-            payday: '2026-08-26',
-            weekEnding: '2026-08-25',
-            hours: 22,
-            regularHours: 22,
-            holidayHours: 0,
-            vacationHours: 0,
-            otHours: 0,
-            gross: 352,
-            federal: 4.24,
-            ss: 21.83,
-            medicare: 5.1,
-            state: 6.69,
-            net: 314.14,
-            punches: [{ id: 'punch-seed-wk-0819', date: '2026-08-19', payType: 'regular', hours: 22, clockIn: '', clockOut: '' }]
-          },
-          {
-            periodStart: '2026-08-26',
-            periodEnd: '2026-09-01',
-            payday: '2026-09-02',
-            weekEnding: '2026-09-01',
-            hours: 17,
-            regularHours: 17,
-            holidayHours: 0,
-            vacationHours: 0,
-            otHours: 0,
-            gross: 272,
-            federal: 0,
-            ss: 16.86,
-            medicare: 3.95,
-            state: 2.69,
-            net: 248.5,
-            punches: [{ id: 'punch-seed-wk-0826', date: '2026-08-26', payType: 'regular', hours: 17, clockIn: '', clockOut: '' }]
-          }
-        ]
-      }
-    ]
+    employees: []
   };
 }
 
 async function ensureDirs() {
   await fsp.mkdir(dataRoot(), { recursive: true });
   await fsp.mkdir(backupsDir(), { recursive: true });
+  await fsp.mkdir(reportsDir(), { recursive: true });
 }
 
 function wrapPayload(jsonUtf8Buffer) {
@@ -500,7 +349,10 @@ function sanitizeSettings(patch) {
     lastChecked: next.lastChecked ?? null,
     checkOnStartup: next.checkOnStartup,
     vacationHoursPerYear: Number.isFinite(vac) && vac >= 0 ? Math.round(vac * 100) / 100 : 40,
-    ptoHoursPerYear: Number.isFinite(pto) && pto >= 0 ? Math.round(pto * 100) / 100 : 40
+    ptoHoursPerYear: Number.isFinite(pto) && pto >= 0 ? Math.round(pto * 100) / 100 : 40,
+    ein: String(next.ein || '').replace(/[^\d]/g, '').slice(0, 9),
+    vaAccount: String(next.vaAccount || '').trim().slice(0, 32),
+    vaUiAccount: String(next.vaUiAccount || '').trim().slice(0, 32)
   };
   return allowed;
 }
@@ -531,9 +383,68 @@ function getMeta() {
     appId: 'com.mooresbodyshop.payroll',
     dataPath: dataRoot(),
     employeesFile: employeesPath(),
+    reportsPath: reportsDir(),
     encryptionAvailable: encryptionAvailable(),
     companyName: "Moore's Body Shop"
   };
+}
+
+function safeReportName(name) {
+  const base = String(name || 'report').replace(/[<>:"/\\|?*\u0000-\u001f]+/g, '-').replace(/\s+/g, ' ').trim();
+  const withExt = /\.pdf$/i.test(base) ? base : `${base}.pdf`;
+  return withExt.slice(0, 120) || 'report.pdf';
+}
+
+async function saveReportPdf(subdir, fileName, buffer) {
+  await ensureDirs();
+  const folder = subdir ? path.join(reportsDir(), String(subdir).replace(/[<>:"/\\|?*]+/g, '-')) : reportsDir();
+  await fsp.mkdir(folder, { recursive: true });
+  const dest = path.join(folder, safeReportName(fileName));
+  const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+  await atomicWrite(dest, buf);
+  return dest;
+}
+
+async function listReports() {
+  await ensureDirs();
+  const root = reportsDir();
+  const out = [];
+  async function walk(dir, rel) {
+    let entries;
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const nextRel = rel ? `${rel}/${e.name}` : e.name;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) await walk(full, nextRel);
+      else if (/\.pdf$/i.test(e.name)) {
+        const st = await fsp.stat(full);
+        out.push({
+          name: e.name,
+          rel: nextRel,
+          folder: rel || '',
+          size: st.size,
+          mtime: st.mtime.toISOString()
+        });
+      }
+    }
+  }
+  await walk(root, '');
+  out.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
+  return out;
+}
+
+function resolveReportPath(rel) {
+  const root = reportsDir();
+  const dest = path.resolve(root, String(rel || ''));
+  const rootFull = path.resolve(root);
+  if (dest !== rootFull && !dest.startsWith(rootFull + path.sep)) {
+    throw new Error('Invalid report path.');
+  }
+  return dest;
 }
 
 async function exportEncryptedTo(destPath) {
@@ -581,6 +492,11 @@ module.exports = {
   employeesPath,
   settingsPath,
   backupsDir,
+  reportsDir,
+  saveReportPdf,
+  listReports,
+  resolveReportPath,
+  safeReportName,
   encryptionAvailable,
   defaultSettings,
   seedData,

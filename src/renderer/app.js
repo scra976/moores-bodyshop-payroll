@@ -15,6 +15,7 @@ const TITLES = {
   add: ['Add employee', 'New hire profile'],
   timeclocks: ['Time clocks', 'Wed–Tue punches · paid Wednesday'],
   payroll: ['Run payroll', 'Grouped by payday Wednesday'],
+  reports: ['Reports', 'Filing worksheets, pay stubs, W-2s, and saved PDFs'],
   settings: ['Settings', 'Data folder, backups, and updates']
 };
 
@@ -48,6 +49,13 @@ const state = {
     info: null,
     message: '',
     percent: 0
+  },
+  reports: {
+    section: 'filing',
+    year: String(new Date().getFullYear()),
+    quarter: String(Math.floor(new Date().getMonth() / 3) + 1),
+    employeeId: '',
+    files: []
   },
   ssnFocus: {}
 };
@@ -487,22 +495,28 @@ function employeeOptions(selectedId, includeBlank, { forPay } = {}) {
 function renderEmployees() {
   const list = visibleEmployees();
   if (state.selectedId && !list.some((e) => e.id === state.selectedId)) {
-    state.selectedId = list[0] ? list[0].id : null;
+    state.selectedId = '';
   }
-  if (!state.selectedId && list[0]) state.selectedId = list[0].id;
   const emp = selectedEmployee();
   if (emp) syncLeaveBalances(emp);
   const archivedCount = (state.data.employees || []).filter(isArchived).length;
+  const picker = `
+    <div class="card">
+      <div class="toolbar">
+        <div class="field">
+          <label for="emp-select">Choose an employee</label>
+          <select id="emp-select">${employeeOptions(emp ? emp.id : '', true)}</select>
+        </div>
+        <label class="chip"><input type="checkbox" id="emp-show-archived"${state.showArchived ? ' checked' : ''} /> Show archived${archivedCount ? ` (${archivedCount})` : ''}</label>
+        <button class="btn btn-primary" data-nav="add">Add employee</button>
+      </div>
+    </div>`;
 
   if (!emp) {
-    return `
+    return `${picker}
       <div class="card empty">
-        <strong>${state.showArchived ? 'No employees yet' : 'No active employees'}</strong>
-        ${state.showArchived ? 'Add someone to start tracking time and pay.' : 'Turn on Show archived, or add a new employee.'}
-        <div class="row-actions" style="justify-content:center">
-          <label class="chip"><input type="checkbox" id="emp-show-archived"${state.showArchived ? ' checked' : ''} /> Show archived${archivedCount ? ` (${archivedCount})` : ''}</label>
-          <button class="btn btn-primary" data-nav="add">Add employee</button>
-        </div>
+        <strong>${list.length ? 'Select an employee to see their profile' : state.showArchived ? 'No employees yet' : 'No active employees'}</strong>
+        ${list.length ? 'Names and pay details stay hidden until you pick someone from the list.' : 'Add someone to start tracking time and pay.'}
       </div>`;
   }
 
@@ -543,7 +557,7 @@ function renderEmployees() {
           : 'badge-active';
   const archived = isArchived(emp);
 
-  return `
+  return `${picker}
     <div class="card profile-card">
       <div class="profile-hero">
         <div class="avatar" aria-hidden="true">${esc(initials(emp))}</div>
@@ -553,13 +567,7 @@ function renderEmployees() {
           <p>Vacation ${hoursFmt(emp.vacationHoursBalance)} h remaining · PTO ${hoursFmt(emp.ptoHoursBalance)} h remaining</p>
         </div>
         <span class="badge ${statusBadge}">${esc(emp.status || 'Active')}</span>
-      </div>
-      <div class="toolbar">
-        <div class="field">
-          <label for="emp-select">Employee</label>
-          <select id="emp-select">${employeeOptions(emp.id, false)}</select>
-        </div>
-        <label class="chip"><input type="checkbox" id="emp-show-archived"${state.showArchived ? ' checked' : ''} /> Show archived${archivedCount ? ` (${archivedCount})` : ''}</label>
+        <button type="button" class="btn btn-secondary" id="btn-emp-reports">Employee reports</button>
       </div>
     </div>
 
@@ -795,6 +803,28 @@ function bindShowArchivedToggle() {
 
 function bindEmployees() {
   bindShowArchivedToggle();
+  const sel = document.getElementById('emp-select');
+  if (sel) {
+    sel.addEventListener('change', async () => {
+      if (state.profileDirty) {
+        const choice = await modal({
+          title: 'Unsaved changes',
+          body: 'Switch employees without saving?',
+          buttons: [
+            { id: 'cancel', label: 'Stay' },
+            { id: 'leave', label: 'Discard', danger: true }
+          ]
+        });
+        if (choice !== 'leave') {
+          sel.value = state.selectedId || '';
+          return;
+        }
+      }
+      state.profileDirty = false;
+      state.selectedId = sel.value;
+      render();
+    });
+  }
   const emp = selectedEmployee();
   if (!emp) return;
 
@@ -802,26 +832,14 @@ function bindEmployees() {
     state.profileDirty = true;
   };
 
-  const sel = document.getElementById('emp-select');
-  sel.addEventListener('change', async () => {
-    if (state.profileDirty) {
-      const choice = await modal({
-        title: 'Unsaved changes',
-        body: 'Switch employees without saving?',
-        buttons: [
-          { id: 'cancel', label: 'Stay' },
-          { id: 'leave', label: 'Discard', danger: true }
-        ]
-      });
-      if (choice !== 'leave') {
-        sel.value = state.selectedId;
-        return;
-      }
-    }
-    state.profileDirty = false;
-    state.selectedId = sel.value;
-    render();
-  });
+  const reportsBtn = document.getElementById('btn-emp-reports');
+  if (reportsBtn) {
+    reportsBtn.addEventListener('click', () => {
+      state.reports.employeeId = emp.id;
+      state.reports.section = 'paystubs';
+      navigate('reports');
+    });
+  }
 
   const map = [
     ['f-jobTitle', (v) => (emp.jobTitle = v)],
@@ -1576,6 +1594,351 @@ function bindTimeclocks() {
   }
 }
 
+const R = () => window.MooresReports;
+
+async function downloadPdf(html, fileName, subdir) {
+  toast('Creating PDF…');
+  try {
+    const res = await api.saveReportPdf({ html, fileName, subdir });
+    if (!res || !res.ok) {
+      toast((res && res.message) || 'Could not create PDF.', 'err');
+      return null;
+    }
+    toast('PDF saved in Reports.', 'ok');
+    if (res.rel) await api.openReport(res.rel);
+    return res;
+  } catch {
+    toast('Could not create PDF.', 'err');
+    return null;
+  }
+}
+
+function reportYearOptions() {
+  const y = new Date().getFullYear();
+  const years = [];
+  for (let i = y; i >= y - 5; i--) years.push(String(i));
+  return years;
+}
+
+function companyForReports() {
+  return (state.data && state.data.company) || { name: "Moore's Body Shop", address: DEFAULT_ADDRESS };
+}
+
+function employeesForReports() {
+  return state.data.employees || [];
+}
+
+async function runFilingPdf(kind) {
+  const year = state.reports.year;
+  const q = state.reports.quarter;
+  const emps = employeesForReports();
+  const co = companyForReports();
+  const s = state.settings;
+  const html = {
+    '941': () => R().form941Html(emps, year, q, co, s),
+    '940': () => R().form940Html(emps, year, co, s),
+    w3: () => R().w3Html(emps, year, co, s),
+    va16: () => R().va16Html(emps, year, q, co, s),
+    va6: () => R().va6Html(emps, year, co, s),
+    vec: () => R().vecHtml(emps, year, q, co, s),
+    register: () => R().registerHtml(emps, year, q, co, s),
+    newhire: () => R().newHireHtml(emps, year, co, s)
+  }[kind];
+  if (!html) return;
+  const names = {
+    '941': `${year}-Q${q}-Form941-worksheet.pdf`,
+    '940': `${year}-Form940-FUTA-worksheet.pdf`,
+    w3: `${year}-W3-transmittal-worksheet.pdf`,
+    va16: `${year}-Q${q}-VA-withholding-worksheet.pdf`,
+    va6: `${year}-VA6-annual-worksheet.pdf`,
+    vec: `${year}-Q${q}-VEC-wage-listing.pdf`,
+    register: `${year}-Q${q}-payroll-register.pdf`,
+    newhire: `${year}-new-hire-listing.pdf`
+  };
+  await downloadPdf(html(), names[kind], 'filing');
+}
+
+async function runEmployeeStubPdf(emp, week) {
+  const year = String((week.payday || week.periodEnd || '').slice(0, 4) || state.reports.year);
+  const ytd = R().ytdThrough(emp, year, week.payday || week.periodEnd);
+  const html = R().paystubHtml(emp, week, ytd, companyForReports(), state.settings);
+  const name = `Paystub-${(emp.lastName || 'employee')}-${week.payday || week.periodEnd || 'pay'}.pdf`;
+  await downloadPdf(html, name, 'paystubs');
+}
+
+async function runAllStubsPdf(filterEmpId) {
+  const year = state.reports.year;
+  const items = [];
+  for (const emp of employeesForReports()) {
+    if (filterEmpId && emp.id !== filterEmpId) continue;
+    for (const week of R().weeksInYear(emp, year)) {
+      items.push({ emp, week, ytd: R().ytdThrough(emp, year, week.payday || week.periodEnd) });
+    }
+  }
+  if (!items.length) {
+    toast('No pay stubs in that year.', 'err');
+    return;
+  }
+  const html = R().combinedPaystubsHtml(items, companyForReports(), state.settings);
+  const who = filterEmpId ? (fullName(findEmployee(filterEmpId)) || 'employee') : 'all';
+  await downloadPdf(html, `${year}-paystubs-${who}.pdf`, 'paystubs');
+}
+
+async function runW2Pdf(emp) {
+  const year = state.reports.year;
+  const t = R().yearTotals(emp, year);
+  if (!t.weeks) {
+    toast('No wages this year for that employee.', 'err');
+    return;
+  }
+  const html = R().w2Html(emp, year, t, companyForReports(), state.settings);
+  await downloadPdf(html, `${year}-W2-${emp.lastName || 'employee'}.pdf`, 'w2');
+}
+
+async function runAllW2Pdf() {
+  const year = state.reports.year;
+  const html = R().combinedW2Html(employeesForReports(), year, companyForReports(), state.settings);
+  await downloadPdf(html, `${year}-W2-all-employees.pdf`, 'w2');
+}
+
+function reportCard(title, due, blurb, action, extraClass) {
+  return `<div class="report-card ${extraClass || ''}">
+    <div>
+      <h3>${esc(title)}</h3>
+      ${due ? `<p class="muted">Due: ${esc(due)}</p>` : ''}
+      <p>${esc(blurb)}</p>
+    </div>
+    <button type="button" class="btn btn-primary" data-report="${esc(action)}">Download PDF</button>
+  </div>`;
+}
+
+async function refreshReportFiles() {
+  try {
+    const res = await api.listReports();
+    state.reports.files = res && res.ok ? res.files || [] : [];
+  } catch {
+    state.reports.files = [];
+  }
+}
+
+function renderReports() {
+  const sec = state.reports.section || 'filing';
+  const year = state.reports.year;
+  const q = state.reports.quarter;
+  const tabs = [
+    ['filing', 'Filing reports'],
+    ['paystubs', 'Pay stubs & W-2s'],
+    ['saved', 'Saved PDFs'],
+    ['archive', 'Archive']
+  ]
+    .map(
+      ([id, label]) =>
+        `<button type="button" class="mode-btn${sec === id ? ' is-active' : ''}" data-report-sec="${id}">${esc(label)}</button>`
+    )
+    .join('');
+
+  const yearSel = `<div class="field"><label>Tax year</label>
+    <select id="rp-year">${optionList(reportYearOptions(), year)}</select></div>
+    <div class="field"><label>Quarter</label>
+    <select id="rp-quarter">${optionList(['1', '2', '3', '4'], q, { 1: 'Q1 Jan–Mar', 2: 'Q2 Apr–Jun', 3: 'Q3 Jul–Sep', 4: 'Q4 Oct–Dec' })}</select></div>`;
+
+  let body = '';
+  if (sec === 'filing') {
+    body = `<div class="card">
+      <div class="toolbar">${yearSel}
+        <p class="hint" style="margin:0">Worksheets from this payroll for IRS and Virginia filings. Add EIN and VA account numbers in Settings so they print on the PDF.</p>
+      </div>
+    </div>
+    <div class="card"><div class="section-title">Federal</div>
+      ${reportCard('Form 941 quarterly federal tax', 'Last day of month after the quarter', 'Income tax, Social Security, and Medicare withheld plus employer FICA match.', '941')}
+      ${reportCard('Form 940 FUTA (annual)', 'January 31', 'Federal unemployment tax worksheet at 0.6% of the first $7,000 per employee.', '940')}
+      ${reportCard('Form W-3 transmittal', 'With W-2s to SSA', 'Totals of all employee W-2 worksheets for the year.', 'w3')}
+    </div>
+    <div class="card"><div class="section-title">Virginia</div>
+      ${reportCard('VA employer withholding (VA-16 / VA-5)', 'Typically the 25th of the following month if you file monthly', 'Virginia income tax withheld for the quarter.', 'va16')}
+      ${reportCard('VA-6 annual reconciliation', 'January 31', 'Year Virginia withholding to match W-2 box 17 totals.', 'va6')}
+      ${reportCard('VEC quarterly wage listing', 'End of month after the quarter', 'Employee wages for Virginia unemployment. UI rate comes from VEC.', 'vec')}
+      ${reportCard('Virginia new-hire listing', 'Within 20 days of hire', 'Employees with a hire date in the selected year.', 'newhire')}
+    </div>
+    <div class="card"><div class="section-title">Internal</div>
+      ${reportCard('Payroll register', '', 'Every paycheck in the quarter with hours, gross, taxes, and net.', 'register')}
+    </div>
+    <p class="disclaimer">These PDFs are filing worksheets from Moore's Body Shop payroll. They are not substitute scannable SSA/IRS/TAX forms. Use the amounts when you e-file or complete the official form.</p>`;
+  } else if (sec === 'paystubs') {
+    const empOpts = employeeOptions(state.reports.employeeId, true);
+    const emp = findEmployee(state.reports.employeeId);
+    const weeks = emp ? R().weeksInYear(emp, year) : [];
+    const weekRows = weeks
+      .map(
+        (w) => `<tr>
+          <td>${esc(w.payday || w.periodEnd)}</td>
+          <td>${esc(tax.formatPeriodLabel(w.periodStart, w.periodEnd))}</td>
+          <td class="num">${hoursFmt(w.hours)}</td>
+          <td class="num">${money(w.gross)}</td>
+          <td class="num">${money(w.net)}</td>
+          <td><button type="button" class="btn btn-sm btn-secondary" data-stub-week="${esc(w.payday || w.periodEnd)}">Pay stub PDF</button></td>
+        </tr>`
+      )
+      .join('');
+    body = `<div class="card">
+      <div class="toolbar">${yearSel}
+        <div class="field"><label>Employee</label><select id="rp-emp">${empOpts}</select></div>
+      </div>
+      <div class="row-actions">
+        <button type="button" class="btn btn-primary" data-report="stubs-one"${emp ? '' : ' disabled'}>Download this employee’s stubs</button>
+        <button type="button" class="btn btn-secondary" data-report="stubs-all">Download all employee stubs</button>
+        <button type="button" class="btn btn-primary" data-report="w2-one"${emp ? '' : ' disabled'}>W-2 for this employee</button>
+        <button type="button" class="btn btn-secondary" data-report="w2-all">W-2s for everyone</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="section-title">${emp ? esc(fullName(emp)) : 'Select an employee'}</div>
+      ${
+        emp
+          ? `<div class="table-wrap"><table class="data">
+              <thead><tr><th>Payday</th><th>Period</th><th class="num">Hours</th><th class="num">Gross</th><th class="num">Net</th><th></th></tr></thead>
+              <tbody>${weekRows || '<tr><td colspan="6" class="muted">No payweeks in this year.</td></tr>'}</tbody>
+            </table></div>`
+          : '<p class="hint">Pick someone to download one stub or their W-2, or use the all-employee buttons.</p>'
+      }
+    </div>`;
+  } else if (sec === 'saved') {
+    const files = state.reports.files || [];
+    const rows = files
+      .map(
+        (f) => `<tr>
+          <td>${esc(f.name)}</td>
+          <td>${esc(f.folder || 'reports')}</td>
+          <td>${esc(f.mtime ? new Date(f.mtime).toLocaleString() : '')}</td>
+          <td><button type="button" class="btn btn-sm btn-secondary" data-open-rel="${esc(f.rel)}">Open</button></td>
+        </tr>`
+      )
+      .join('');
+    body = `<div class="card">
+      <div class="toolbar">
+        <p class="hint" style="margin:0">PDFs are stored in your Windows user folder, not next to the app.</p>
+        <button type="button" class="btn btn-secondary" id="rp-open-folder">Open reports folder</button>
+      </div>
+      <div class="path-box">${esc((state.meta && state.meta.reportsPath) || '')}</div>
+      <div class="table-wrap" style="margin-top:14px">
+        <table class="data">
+          <thead><tr><th>File</th><th>Folder</th><th>Saved</th><th></th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="4" class="muted">No PDFs saved yet.</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>`;
+  } else {
+    const archived = (state.data.employees || []).filter(isArchived);
+    const rows = archived
+      .map(
+        (e) => `<tr>
+          <td>${esc(fullName(e))}</td>
+          <td>${esc(e.jobTitle || '—')}</td>
+          <td class="num">${(e.payweeks || []).length}</td>
+          <td>
+            <button type="button" class="btn btn-sm btn-secondary" data-arch-reports="${esc(e.id)}">Reports</button>
+            <button type="button" class="btn btn-sm btn-secondary" data-arch-restore="${esc(e.id)}">Restore</button>
+          </td>
+        </tr>`
+      )
+      .join('');
+    body = `<div class="card">
+      <p class="hint">Archived people are hidden from Time clocks and Run payroll. Their pay history stays in the encrypted file. Restore them here or from the employee profile.</p>
+      <div class="table-wrap">
+        <table class="data">
+          <thead><tr><th>Name</th><th>Job</th><th class="num">Payweeks</th><th></th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="4" class="muted">No archived employees.</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>`;
+  }
+
+  return `<div class="card"><div class="mode-toggle" role="tablist">${tabs}</div></div>${body}`;
+}
+
+function bindReports() {
+  document.querySelectorAll('[data-report-sec]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      state.reports.section = btn.getAttribute('data-report-sec');
+      if (state.reports.section === 'saved') await refreshReportFiles();
+      render();
+    });
+  });
+  const y = document.getElementById('rp-year');
+  if (y) y.addEventListener('change', () => {
+    state.reports.year = y.value;
+    render();
+  });
+  const q = document.getElementById('rp-quarter');
+  if (q) q.addEventListener('change', () => {
+    state.reports.quarter = q.value;
+    render();
+  });
+  const emp = document.getElementById('rp-emp');
+  if (emp) emp.addEventListener('change', () => {
+    state.reports.employeeId = emp.value;
+    render();
+  });
+  document.querySelectorAll('[data-report]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const kind = btn.getAttribute('data-report');
+      if (kind === 'stubs-one') return runAllStubsPdf(state.reports.employeeId);
+      if (kind === 'stubs-all') return runAllStubsPdf('');
+      if (kind === 'w2-one') {
+        const e = findEmployee(state.reports.employeeId);
+        if (e) return runW2Pdf(e);
+        return;
+      }
+      if (kind === 'w2-all') return runAllW2Pdf();
+      return runFilingPdf(kind);
+    });
+  });
+  document.querySelectorAll('[data-stub-week]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const e = findEmployee(state.reports.employeeId);
+      if (!e) return;
+      const key = btn.getAttribute('data-stub-week');
+      const week = (e.payweeks || []).find((w) => (w.payday || w.periodEnd) === key);
+      if (week) await runEmployeeStubPdf(e, week);
+    });
+  });
+  const folder = document.getElementById('rp-open-folder');
+  if (folder) folder.addEventListener('click', () => api.openReportsFolder());
+  document.querySelectorAll('[data-open-rel]').forEach((btn) => {
+    btn.addEventListener('click', () => api.openReport(btn.getAttribute('data-open-rel')));
+  });
+  document.querySelectorAll('[data-arch-reports]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.reports.employeeId = btn.getAttribute('data-arch-reports');
+      state.reports.section = 'paystubs';
+      render();
+    });
+  });
+  document.querySelectorAll('[data-arch-restore]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const e = findEmployee(btn.getAttribute('data-arch-restore'));
+      if (!e) return;
+      const choice = await modal({
+        title: 'Restore employee?',
+        body: `Restore <strong>${esc(fullName(e))}</strong> to Active?`,
+        buttons: [
+          { id: 'cancel', label: 'Cancel' },
+          { id: 'ok', label: 'Restore', primary: true }
+        ]
+      });
+      if (choice !== 'ok') return;
+      e.status = 'Active';
+      try {
+        await persist();
+        toast('Employee restored.', 'ok');
+        render();
+      } catch {
+        toast('Could not restore.', 'err');
+      }
+    });
+  });
+}
+
 function allPayweeks() {
   const rows = [];
   for (const emp of state.data.employees || []) {
@@ -1627,10 +1990,11 @@ function renderPayroll() {
   const archivedCount = (state.data.employees || []).filter(isArchived).length;
   let body = '';
   if (!rows.length) {
-    body = `<tr><td colspan="7" class="muted">No payweeks yet. Transfer a timesheet from Time clocks.</td></tr>`;
+    body = `<tr><td colspan="8" class="muted">No payweeks yet. Transfer a timesheet from Time clocks.</td></tr>`;
   } else {
     for (const g of groups) {
-      body += `<tr><td colspan="7"><strong>Payday ${esc(g.payday === 'unknown' ? '—' : g.payday)}</strong> (Wednesday)</td></tr>`;
+      body += `<tr><td colspan="8"><strong>Payday ${esc(g.payday === 'unknown' ? '—' : g.payday)}</strong> (Wednesday)
+        <button type="button" class="btn btn-sm btn-secondary" data-payday-stubs="${esc(g.payday)}">Download all stubs</button></td></tr>`;
       body += g.rows
         .map(
           (r) => `<tr>
@@ -1641,6 +2005,7 @@ function renderPayroll() {
             <td class="num">${money(r.gross)}</td>
             <td class="num">${money(r.taxes)}</td>
             <td class="num">${money(r.net)}</td>
+            <td><button type="button" class="btn btn-sm btn-secondary" data-row-stub="${esc(r.employeeId)}|${esc(r.payday || r.periodEnd)}">Stub PDF</button></td>
           </tr>`
         )
         .join('');
@@ -1653,13 +2018,14 @@ function renderPayroll() {
         <td class="num"><strong>${money(totals.gross)}</strong></td>
         <td class="num"><strong>${money(totals.taxes)}</strong></td>
         <td class="num"><strong>${money(totals.net)}</strong></td>
+        <td></td>
       </tr>`;
   }
 
   return `
     <div class="card">
       <div class="toolbar">
-        <p class="hint" style="margin:0">Weekly · Wed–Tue · Paid Wednesday. Groups are payday Wednesdays.</p>
+        <p class="hint" style="margin:0">Weekly · Wed–Tue · Paid Wednesday. Download a check stub PDF for one person or everyone on that payday. Stubs are saved in Reports.</p>
         <label class="chip"><input type="checkbox" id="pr-show-archived"${state.showArchived ? ' checked' : ''} /> Show archived${archivedCount ? ` (${archivedCount})` : ''}</label>
       </div>
       <div class="table-wrap">
@@ -1673,6 +2039,7 @@ function renderPayroll() {
               <th class="num">Gross</th>
               <th class="num">Total taxes</th>
               <th class="num">Net</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>${body}</tbody>
@@ -1725,6 +2092,15 @@ function renderSettings() {
         <div class="field"><label>App ID</label><input value="${esc((state.meta && state.meta.appId) || '')}" readonly /></div>
         <div class="field"><label>Channel</label><input value="stable" readonly /></div>
         <div class="field span-2"><label>Pay schedule</label><input value="Weekly · Wed–Tue · Paid Wednesday" readonly /></div>
+        <div class="field"><label>Federal EIN</label>
+          <input id="s-ein" inputmode="numeric" maxlength="10" placeholder="XX-XXXXXXX" value="${esc((state.settings && state.settings.ein) || '')}" />
+        </div>
+        <div class="field"><label>VA withholding account</label>
+          <input id="s-vaAcct" value="${esc((state.settings && state.settings.vaAccount) || '')}" />
+        </div>
+        <div class="field"><label>VEC / UI account</label>
+          <input id="s-vaUi" value="${esc((state.settings && state.settings.vaUiAccount) || '')}" />
+        </div>
         <div class="field"><label>Default vacation hours / year</label>
           <input id="s-vacHours" type="number" min="0" step="0.01" value="${esc((state.settings && state.settings.vacationHoursPerYear) || 0)}" />
         </div>
@@ -1875,7 +2251,7 @@ function bindSettings() {
       if (res && res.canceled) return;
       if (res && res.ok && res.data) {
         state.data = res.data;
-        state.selectedId = (state.data.employees[0] && state.data.employees[0].id) || null;
+        state.selectedId = '';
         state.profileDirty = false;
         toast(choice === 'replace' ? 'Database replaced from backup.' : 'Backup merged.', 'ok');
         render();
@@ -1916,7 +2292,18 @@ function bindSettings() {
       const checkOnStartup = document.getElementById('s-startup').value === 'on';
       const vacationHoursPerYear = Number(document.getElementById('s-vacHours').value) || 0;
       const ptoHoursPerYear = Number(document.getElementById('s-ptoHours').value) || 0;
-      state.settings = await api.saveSettings({ updateUrl, checkOnStartup, vacationHoursPerYear, ptoHoursPerYear });
+      const ein = (document.getElementById('s-ein') && document.getElementById('s-ein').value) || '';
+      const vaAccount = (document.getElementById('s-vaAcct') && document.getElementById('s-vaAcct').value) || '';
+      const vaUiAccount = (document.getElementById('s-vaUi') && document.getElementById('s-vaUi').value) || '';
+      state.settings = await api.saveSettings({
+        updateUrl,
+        checkOnStartup,
+        vacationHoursPerYear,
+        ptoHoursPerYear,
+        ein,
+        vaAccount,
+        vaUiAccount
+      });
       toast('Settings saved.', 'ok');
       render();
     } catch {
@@ -2003,6 +2390,34 @@ function render() {
         render();
       });
     }
+    document.querySelectorAll('[data-row-stub]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const [id, payday] = String(btn.getAttribute('data-row-stub') || '').split('|');
+        const e = findEmployee(id);
+        if (!e) return;
+        const week = (e.payweeks || []).find((w) => (w.payday || w.periodEnd) === payday);
+        if (week) await runEmployeeStubPdf(e, week);
+      });
+    });
+    document.querySelectorAll('[data-payday-stubs]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const payday = btn.getAttribute('data-payday-stubs');
+        const items = [];
+        for (const emp of state.data.employees || []) {
+          for (const week of emp.payweeks || []) {
+            if ((week.payday || week.periodEnd) !== payday) continue;
+            const year = String(payday).slice(0, 4);
+            items.push({ emp, week, ytd: R().ytdThrough(emp, year, payday) });
+          }
+        }
+        if (!items.length) return toast('No stubs for that payday.', 'err');
+        const html = R().combinedPaystubsHtml(items, companyForReports(), state.settings);
+        await downloadPdf(html, `Paystubs-${payday}.pdf`, 'paystubs');
+      });
+    });
+  } else if (state.view === 'reports') {
+    root.innerHTML = renderReports();
+    bindReports();
   } else if (state.view === 'settings') {
     root.innerHTML = renderSettings();
     bindSettings();
@@ -2033,8 +2448,7 @@ async function boot() {
         /* keep working; next save will persist balances */
       }
     }
-    const firstActive = activeEmployees()[0];
-    if (!state.selectedId) state.selectedId = firstActive ? firstActive.id : null;
+    if (!state.selectedId) state.selectedId = '';
   } catch {
     if (!state.data) state.data = { version: 1, company: { name: "Moore's Body Shop" }, employees: [] };
     toast('Could not open payroll data. Check %APPDATA%\\MooresBodyShop\\payroll\\', 'err');

@@ -16,6 +16,10 @@ contextBridge.exposeInMainWorld('mooresPayroll', {
   checkForUpdates: () => ipcRenderer.invoke('update:check'),
   downloadUpdate: () => ipcRenderer.invoke('update:download'),
   installUpdate: () => ipcRenderer.invoke('update:install'),
+  listReports: () => ipcRenderer.invoke('reports:list'),
+  openReportsFolder: () => ipcRenderer.invoke('reports:openFolder'),
+  openReport: (rel) => ipcRenderer.invoke('reports:open', rel),
+  saveReportPdf: (payload) => ipcRenderer.invoke('reports:savePdf', payload),
   onUpdateEvent: (callback) => {
     const listener = (_event, payload) => {
       if (typeof callback === 'function') callback(payload);

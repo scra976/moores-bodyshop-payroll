@@ -2,6 +2,8 @@
 
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
 const path = require('path');
+const os = require('os');
+const fsp = require('fs/promises');
 const store = require('./store');
 const updater = require('./updater');
 
@@ -150,6 +152,66 @@ function registerIpc() {
   ipcMain.handle('update:check', async () => updater.check());
   ipcMain.handle('update:download', async () => updater.download());
   ipcMain.handle('update:install', async () => updater.install());
+
+  ipcMain.handle('reports:list', async () => {
+    try {
+      return { ok: true, files: await store.listReports(), folder: store.reportsDir() };
+    } catch (err) {
+      return { ok: false, message: err && err.message ? String(err.message) : 'Could not list reports.' };
+    }
+  });
+
+  ipcMain.handle('reports:openFolder', async () => {
+    await store.ensureDirs();
+    const result = await shell.openPath(store.reportsDir());
+    return { ok: !result, message: result || null };
+  });
+
+  ipcMain.handle('reports:open', async (_event, rel) => {
+    try {
+      const dest = store.resolveReportPath(rel);
+      const result = await shell.openPath(dest);
+      return { ok: !result, message: result || null };
+    } catch (err) {
+      return { ok: false, message: err && err.message ? String(err.message) : 'Could not open report.' };
+    }
+  });
+
+  ipcMain.handle('reports:savePdf', async (_event, payload) => {
+    const html = payload && payload.html;
+    const fileName = payload && payload.fileName;
+    const subdir = (payload && payload.subdir) || '';
+    if (!html || !fileName) return { ok: false, message: 'Missing report content.' };
+    const tmp = path.join(os.tmpdir(), `mbsp-report-${Date.now()}-${process.pid}.html`);
+    let win = null;
+    try {
+      await fsp.writeFile(tmp, String(html), 'utf8');
+      win = new BrowserWindow({
+        show: false,
+        width: 900,
+        height: 1100,
+        webPreferences: {
+          sandbox: true,
+          contextIsolation: true,
+          nodeIntegration: false
+        }
+      });
+      await win.loadFile(tmp);
+      const pdf = await win.webContents.printToPDF({
+        printBackground: true,
+        pageSize: 'Letter',
+        preferCSSPageSize: true,
+        margins: { marginType: 'default' }
+      });
+      const dest = await store.saveReportPdf(subdir, fileName, pdf);
+      return { ok: true, path: dest, rel: path.relative(store.reportsDir(), dest) };
+    } catch (err) {
+      return { ok: false, message: err && err.message ? String(err.message) : 'Could not create PDF.' };
+    } finally {
+      if (win && !win.isDestroyed()) win.destroy();
+      await fsp.unlink(tmp).catch(() => {});
+    }
+  });
 }
 
 const gotLock = app.requestSingleInstanceLock();
