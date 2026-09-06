@@ -20,6 +20,11 @@ contextBridge.exposeInMainWorld('mooresPayroll', {
   openReportsFolder: () => ipcRenderer.invoke('reports:openFolder'),
   openReport: (rel) => ipcRenderer.invoke('reports:open', rel),
   saveReportPdf: (payload) => ipcRenderer.invoke('reports:savePdf', payload),
+  loadBooks: () => ipcRenderer.invoke('books:load'),
+  saveBooks: (data) => ipcRenderer.invoke('books:save', data),
+  openPayrollFolder: () => ipcRenderer.invoke('data:openPayrollFolder'),
+  saveReceiptPdf: (payload) => ipcRenderer.invoke('receipts:savePdf', payload),
+  printHtml: (html) => ipcRenderer.invoke('print:html', html),
   onUpdateEvent: (callback) => {
     const listener = (_event, payload) => {
       if (typeof callback === 'function') callback(payload);

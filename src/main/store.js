@@ -5,6 +5,8 @@ const fsp = require('fs/promises');
 const path = require('path');
 const { app, safeStorage } = require('electron');
 
+const booksEngine = require('../renderer/books');
+
 const MAGIC = Buffer.from('MBSPAY01');
 const FLAG_ENCRYPTED = 0x01;
 const FLAG_PLAIN = 0x00;
@@ -18,8 +20,32 @@ const DEFAULT_ADDRESS = {
   zip: '24060'
 };
 
+function shopRoot() {
+  return path.join(app.getPath('appData'), 'MooresBodyShop');
+}
+
 function dataRoot() {
-  return path.join(app.getPath('appData'), 'MooresBodyShop', 'payroll');
+  return path.join(shopRoot(), 'payroll');
+}
+
+function booksDir() {
+  return path.join(shopRoot(), 'books');
+}
+
+function receiptsDir() {
+  return path.join(shopRoot(), 'receipts');
+}
+
+function shopBackupsDir() {
+  return path.join(shopRoot(), 'backups');
+}
+
+function booksPath() {
+  return path.join(booksDir(), 'books.json');
+}
+
+function receiptsIndexPath() {
+  return path.join(receiptsDir(), 'receipts.json');
 }
 
 function employeesPath() {
@@ -72,9 +98,13 @@ function seedData() {
 }
 
 async function ensureDirs() {
+  await fsp.mkdir(shopRoot(), { recursive: true });
   await fsp.mkdir(dataRoot(), { recursive: true });
   await fsp.mkdir(backupsDir(), { recursive: true });
   await fsp.mkdir(reportsDir(), { recursive: true });
+  await fsp.mkdir(booksDir(), { recursive: true });
+  await fsp.mkdir(receiptsDir(), { recursive: true });
+  await fsp.mkdir(shopBackupsDir(), { recursive: true });
 }
 
 function wrapPayload(jsonUtf8Buffer) {
@@ -381,7 +411,12 @@ function getMeta() {
   return {
     version: app.getVersion(),
     appId: 'com.mooresbodyshop.payroll',
+    shopRoot: shopRoot(),
     dataPath: dataRoot(),
+    payrollPath: dataRoot(),
+    booksPath: booksDir(),
+    receiptsPath: receiptsDir(),
+    backupsPath: shopBackupsDir(),
     employeesFile: employeesPath(),
     reportsPath: reportsDir(),
     encryptionAvailable: encryptionAvailable(),
@@ -485,15 +520,81 @@ async function importFrom(filePath, mode) {
   return merged;
 }
 
+async function writeShopBackup(books) {
+  await fsp.mkdir(shopBackupsDir(), { recursive: true });
+  const name = `books-${backupStamp()}.json`;
+  const dest = path.join(shopBackupsDir(), name);
+  const json = Buffer.from(`${JSON.stringify(books)}\n`, 'utf8');
+  await atomicWrite(dest, json);
+  let entries;
+  try {
+    entries = await fsp.readdir(shopBackupsDir(), { withFileTypes: true });
+  } catch {
+    return;
+  }
+  const files = entries
+    .filter((e) => e.isFile() && /^books-\d{8}-\d{6}\.json$/i.test(e.name))
+    .map((e) => e.name)
+    .sort()
+    .reverse();
+  const extra = files.slice(MAX_BACKUPS);
+  await Promise.all(extra.map((n) => fsp.unlink(path.join(shopBackupsDir(), n)).catch(() => {})));
+}
+
+async function loadBooks() {
+  await ensureDirs();
+  const live = booksPath();
+  try {
+    await fsp.access(live, fs.constants.F_OK);
+  } catch {
+    const seeded = booksEngine.seedBooks();
+    await saveBooks(seeded);
+    return seeded;
+  }
+  try {
+    const text = await fsp.readFile(live, 'utf8');
+    const parsed = JSON.parse(text);
+    return booksEngine.normalize(parsed);
+  } catch (err) {
+    const message = err && err.message ? String(err.message) : 'Could not read books.';
+    throw new Error(message);
+  }
+}
+
+async function saveBooks(data) {
+  const books = booksEngine.normalize(data);
+  await ensureDirs();
+  const json = Buffer.from(`${JSON.stringify(books, null, 2)}\n`, 'utf8');
+  await atomicWrite(booksPath(), json);
+  const receiptsJson = Buffer.from(`${JSON.stringify({ version: 2, receipts: books.receipts }, null, 2)}\n`, 'utf8');
+  await atomicWrite(receiptsIndexPath(), receiptsJson);
+  await writeShopBackup(books);
+  return { ok: true };
+}
+
+async function saveReceiptPdf(fileName, buffer) {
+  await ensureDirs();
+  const dest = path.join(receiptsDir(), safeReportName(fileName));
+  const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+  await atomicWrite(dest, buf);
+  return dest;
+}
+
 module.exports = {
   DEFAULT_UPDATE_URL,
   DEFAULT_ADDRESS,
+  shopRoot,
   dataRoot,
+  booksDir,
+  receiptsDir,
+  shopBackupsDir,
+  booksPath,
   employeesPath,
   settingsPath,
   backupsDir,
   reportsDir,
   saveReportPdf,
+  saveReceiptPdf,
   listReports,
   resolveReportPath,
   safeReportName,
@@ -505,6 +606,8 @@ module.exports = {
   saveEmployees,
   loadSettings,
   saveSettings,
+  loadBooks,
+  saveBooks,
   getMeta,
   exportEncryptedTo,
   exportDecryptedTo,

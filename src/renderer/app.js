@@ -10,13 +10,21 @@ const DEFAULT_ADDRESS = {
   zip: '24060'
 };
 
+const PAYROLL_VIEWS = ['employees', 'add', 'timeclocks', 'payroll', 'payroll-settings'];
+
 const TITLES = {
+  dashboard: ['Dashboard', 'Shop snapshot'],
+  ar: ['Accounts Receivable', 'Customers, ROs, receipts, invoices'],
+  ap: ['Accounts Payable', 'Vendors, bills, and payments'],
+  gl: ['General Ledger', 'Chart of accounts, journal, trial balance'],
+  inventory: ['Inventory', 'Parts quantity and FIFO cost'],
   employees: ['Employees', 'People you pay'],
   add: ['Add employee', 'New hire profile'],
   timeclocks: ['Time clocks', 'Wed–Tue punches · paid Wednesday'],
   payroll: ['Run payroll', 'Grouped by payday Wednesday'],
-  reports: ['Reports', 'Filing worksheets, pay stubs, W-2s, and saved PDFs'],
-  settings: ['Settings', 'Data folder, backups, and updates']
+  'payroll-settings': ['Payroll settings', 'EIN, leave, and payroll backups'],
+  reports: ['Reports', 'P&L, balance sheet, tax, aging, and payroll filings'],
+  settings: ['Settings', 'Company, rates, data folder, and updates']
 };
 
 const US_STATES = [
@@ -26,8 +34,9 @@ const US_STATES = [
 ];
 
 const state = {
-  view: 'employees',
+  view: 'dashboard',
   data: null,
+  books: null,
   settings: null,
   meta: null,
   selectedId: null,
@@ -51,7 +60,7 @@ const state = {
     percent: 0
   },
   reports: {
-    section: 'filing',
+    section: 'books',
     year: String(new Date().getFullYear()),
     quarter: String(Math.floor(new Date().getMonth() / 3) + 1),
     employeeId: '',
@@ -422,11 +431,45 @@ async function persist() {
   }
 }
 
+async function persistBooks() {
+  if (!state.books) return false;
+  const res = await api.saveBooks(state.books);
+  if (!res || res.ok === false) {
+    toast((res && res.message) || 'Could not save books.', 'err');
+    return false;
+  }
+  return true;
+}
+
+function booksCtx() {
+  return {
+    state,
+    esc,
+    money,
+    toast,
+    modal,
+    api,
+    persistBooks,
+    renderAll: render,
+    uid,
+    navigate
+  };
+}
+
 function setNav(view) {
   document.querySelectorAll('.nav-item').forEach((btn) => {
-    btn.classList.toggle('is-active', btn.getAttribute('data-nav') === view);
+    const nav = btn.getAttribute('data-nav');
+    const isSub = btn.classList.contains('nav-subitem');
+    let on = false;
+    if (PAYROLL_VIEWS.includes(view)) {
+      if (isSub) on = nav === view;
+      else on = nav === 'employees';
+    } else {
+      on = !isSub && nav === view;
+    }
+    btn.classList.toggle('is-active', on);
   });
-  const pair = TITLES[view] || ['Payroll', ''];
+  const pair = TITLES[view] || ['Moore\'s Body Shop', ''];
   document.getElementById('page-title').textContent = pair[0];
   document.getElementById('page-sub').textContent = pair[1];
 }
@@ -1586,7 +1629,33 @@ function bindTimeclocks() {
       try {
         await persist();
         state.selectedId = emp.id;
-        toast('Payweek transferred to the employee profile.', 'ok');
+        if (state.books && window.MooresBooks) {
+          const posted = window.MooresBooks.postPayrollRun(state.books, {
+            employeeId: emp.id,
+            employeeName: fullName(emp),
+            periodEnd: record.periodEnd,
+            payday: record.payday,
+            gross: record.gross,
+            net: record.net,
+            federal: record.federal,
+            ss: record.ss,
+            medicare: record.medicare,
+            additionalMedicare: calc.pay.additionalMedicare,
+            state: record.state,
+            childSupport: record.childSupport,
+            garnishments: record.garnishments,
+            pretax: record.pretax
+          });
+          if (posted.ok) {
+            state.books = posted.books;
+            await persistBooks();
+            toast('Payweek transferred and posted to the ledger.', 'ok');
+          } else {
+            toast('Payweek saved. Ledger post failed: ' + posted.error, 'err');
+          }
+        } else {
+          toast('Payweek transferred to the employee profile.', 'ok');
+        }
       } catch {
         toast('Could not save the payweek.', 'err');
       }
@@ -1621,6 +1690,7 @@ function reportYearOptions() {
 }
 
 function companyForReports() {
+  if (state.books && state.books.company) return state.books.company;
   return (state.data && state.data.company) || { name: "Moore's Body Shop", address: DEFAULT_ADDRESS };
 }
 
@@ -1726,7 +1796,8 @@ function renderReports() {
   const year = state.reports.year;
   const q = state.reports.quarter;
   const tabs = [
-    ['filing', 'Filing reports'],
+    ['books', 'Shop books'],
+    ['filing', 'Payroll filing'],
     ['paystubs', 'Pay stubs & W-2s'],
     ['saved', 'Saved PDFs'],
     ['archive', 'Archive']
@@ -1743,7 +1814,9 @@ function renderReports() {
     <select id="rp-quarter">${optionList(['1', '2', '3', '4'], q, { 1: 'Q1 Jan–Mar', 2: 'Q2 Apr–Jun', 3: 'Q3 Jul–Sep', 4: 'Q4 Oct–Dec' })}</select></div>`;
 
   let body = '';
-  if (sec === 'filing') {
+  if (sec === 'books') {
+    body = window.MooresBooksUi ? window.MooresBooksUi.renderBooksReports(booksCtx()) : '<p class="hint">Books module missing.</p>';
+  } else if (sec === 'filing') {
     body = `<div class="card">
       <div class="toolbar">${yearSel}
         <p class="hint" style="margin:0">Worksheets from this payroll for IRS and Virginia filings. Add EIN and VA account numbers in Settings so they print on the PDF.</p>
@@ -1857,6 +1930,9 @@ function renderReports() {
 }
 
 function bindReports() {
+  if (state.reports.section === 'books' && window.MooresBooksUi) {
+    window.MooresBooksUi.bindBooksReports(booksCtx());
+  }
   document.querySelectorAll('[data-report-sec]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       state.reports.section = btn.getAttribute('data-report-sec');
@@ -2064,8 +2140,13 @@ function formatBytes(n) {
   return `${(x / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+function shopCompany() {
+  const c = (state.books && state.books.company) || {};
+  const a = c.address || DEFAULT_ADDRESS;
+  return { ...c, address: { ...DEFAULT_ADDRESS, ...a } };
+}
+
 function renderSettings() {
-  const encOn = Boolean(state.meta && state.meta.encryptionAvailable);
   const u = state.update;
   let updateDetail = 'No check yet.';
   if (u.phase === 'checking') updateDetail = 'Checking the update server…';
@@ -2076,78 +2157,55 @@ function renderSettings() {
     updateDetail = `Version ${esc(u.info.version)} is available${size ? ' (' + esc(size) + ')' : ''}.`;
   }
   if (u.phase === 'downloading') updateDetail = `Downloading… ${Math.round(u.percent || 0)}%`;
-  if (u.phase === 'downloaded') updateDetail = 'Update downloaded. Restart applies it silently — no installer wizard. Payroll data in AppData is not touched.';
+  if (u.phase === 'downloaded') updateDetail = 'Update downloaded. Restart applies it silently — no installer wizard. AppData is not touched.';
 
   const notes =
     u.info && u.info.releaseNotes
       ? `<p class="hint" style="white-space:pre-wrap">${esc(u.info.releaseNotes)}</p>`
       : '';
+  const co = shopCompany();
+  const bs = (state.books && state.books.settings) || {};
 
   return `
     <div class="card">
       <div class="section-title">Company</div>
       <div class="grid grid-2">
-        <div class="field"><label>Company name</label><input value="Moore's Body Shop" readonly /></div>
+        <div class="field"><label>Company name</label><input id="s-co-name" value="${esc(co.name || "Moore's Body Shop")}" /></div>
+        <div class="field"><label>Phone</label><input id="s-co-phone" value="${esc(co.phone || '')}" /></div>
+        <div class="field span-2"><label>Street</label><input id="s-co-street" value="${esc(co.address.street || '')}" /></div>
+        <div class="field"><label>City</label><input id="s-co-city" value="${esc(co.address.city || '')}" /></div>
+        <div class="field"><label>State</label><input id="s-co-state" value="${esc(co.address.state || '')}" /></div>
+        <div class="field"><label>ZIP</label><input id="s-co-zip" value="${esc(co.address.zip || '')}" /></div>
+        <div class="field"><label>Mechanical labor $/hr</label>
+          <input id="s-mech" type="number" step="0.01" value="${esc(bs.mechRate != null ? bs.mechRate : 90)}" /></div>
+        <div class="field"><label>Body labor $/hr</label>
+          <input id="s-body" type="number" step="0.01" value="${esc(bs.bodyRate != null ? bs.bodyRate : 55)}" /></div>
+        <div class="field"><label>Parts tax rate %</label>
+          <input id="s-tax" type="number" step="0.01" value="${esc(bs.taxRate != null ? bs.taxRate : 5.3)}" /></div>
+        <div class="field"><label>Direct labor COGS (5100)</label>
+          <select id="s-labor-cogs">${optionList(['off', 'on'], bs.laborCogsEnabled ? 'on' : 'off', { off: 'Off (default) — labor is revenue only', on: 'On' })}</select></div>
         <div class="field"><label>App version</label><input value="${esc((state.meta && state.meta.version) || '')}" readonly /></div>
         <div class="field"><label>App ID</label><input value="${esc((state.meta && state.meta.appId) || '')}" readonly /></div>
-        <div class="field"><label>Channel</label><input value="stable" readonly /></div>
-        <div class="field span-2"><label>Pay schedule</label><input value="Weekly · Wed–Tue · Paid Wednesday" readonly /></div>
-        <div class="field"><label>Federal EIN</label>
-          <input id="s-ein" inputmode="numeric" maxlength="10" placeholder="XX-XXXXXXX" value="${esc((state.settings && state.settings.ein) || '')}" />
-        </div>
-        <div class="field"><label>VA withholding account</label>
-          <input id="s-vaAcct" value="${esc((state.settings && state.settings.vaAccount) || '')}" />
-        </div>
-        <div class="field"><label>VEC / UI account</label>
-          <input id="s-vaUi" value="${esc((state.settings && state.settings.vaUiAccount) || '')}" />
-        </div>
-        <div class="field"><label>Default vacation hours / year</label>
-          <input id="s-vacHours" type="number" min="0" step="0.01" value="${esc((state.settings && state.settings.vacationHoursPerYear) || 0)}" />
-        </div>
-        <div class="field"><label>Default PTO hours / year</label>
-          <input id="s-ptoHours" type="number" min="0" step="0.01" value="${esc((state.settings && state.settings.ptoHoursPerYear) || 0)}" />
-        </div>
-      </div>
-      <p class="hint">Period is Wednesday through Tuesday. Payday is the Wednesday after that Tuesday. Vacation and PTO balances reset to these defaults every January 1. Regular, vacation, PTO, and holiday hours are taxable. Overtime is hours over 40 in that window at 1.5×. No local VA tax. No employee VA UI.</p>
-      <div class="row-actions">
-        <button class="btn btn-secondary" id="btn-apply-leave">Apply this year’s defaults to all employees</button>
       </div>
       <div class="row-actions">
-        <button class="btn btn-secondary" id="btn-open-p15t">Open IRS Pub 15-T (2026)</button>
+        <button class="btn btn-primary" id="btn-save-shop">Save company &amp; rates</button>
       </div>
+      <p class="hint">Labor is never taxed. Parts tax default is 5.3%. Saving here does not change employee records.</p>
     </div>
 
     <div class="card">
-      <div class="section-title">Payroll data folder</div>
-      ${
-        encOn
-          ? ''
-          : `<div class="warn-banner">OS encryption unavailable — data is in your user folder only</div>`
-      }
-      <p class="hint">Employee files never live next to the .exe or in Program Files. Updates replace app binaries only and do not wipe this folder.</p>
-      <div class="path-box" id="data-path">${esc((state.meta && state.meta.dataPath) || '')}</div>
+      <div class="section-title">Data path</div>
+      <p class="hint">All shop data lives under %APPDATA%\\MooresBodyShop\\ (books, payroll, receipts, backups). Never next to the .exe. Updates replace app binaries only and do not wipe AppData.</p>
+      <div class="path-box">${esc((state.meta && state.meta.shopRoot) || '')}</div>
+      <p class="hint">Payroll employees: ${esc((state.meta && (state.meta.payrollPath || state.meta.dataPath)) || '')}</p>
       <div class="row-actions">
         <button class="btn btn-secondary" id="btn-open-folder">Open data folder</button>
-        <button class="btn btn-secondary" id="btn-export-enc">Export encrypted backup</button>
-        <button class="btn btn-secondary" id="btn-export-json">Export decrypted JSON backup</button>
-        <button class="btn btn-secondary" id="btn-import">Import backup</button>
       </div>
-      <p class="hint" style="margin-top:12px">Encrypted backups can only be opened by the same Windows user. Use decrypted JSON to move the shop to another PC — that file contains SSNs.</p>
-      <p class="hint">Archived employees stay in this encrypted file with their payweeks. Use Employees → Show archived to restore or delete permanently.</p>
-    </div>
-
-    <div class="card">
-      <div class="section-title">Encryption</div>
-      <p>${
-        encOn
-          ? 'Windows DPAPI encryption is on. <code>employees.json.enc</code> is encrypted at rest for this Windows user.'
-          : 'OS encryption unavailable — data is in your user folder only.'
-      }</p>
     </div>
 
     <div class="card">
       <div class="section-title">Updates</div>
-      <p class="hint">The app works fully offline. Updates are optional and download into Electron’s updater cache, never into the payroll data folder.</p>
+      <p class="hint">The app works fully offline. Updates download into Electron’s updater cache, never into AppData.</p>
       <div class="grid grid-2">
         <div class="field span-2"><label>Update server URL</label>
           <input id="s-updateUrl" value="${esc((state.settings && state.settings.updateUrl) || '')}" />
@@ -2176,7 +2234,66 @@ function renderSettings() {
     </div>`;
 }
 
-function bindSettings() {
+function renderPayrollSettings() {
+  const encOn = Boolean(state.meta && state.meta.encryptionAvailable);
+  return `
+    <div class="card">
+      <div class="section-title">Payroll</div>
+      <div class="grid grid-2">
+        <div class="field span-2"><label>Pay schedule</label><input value="Weekly · Wed–Tue · Paid Wednesday" readonly /></div>
+        <div class="field"><label>Federal EIN</label>
+          <input id="s-ein" inputmode="numeric" maxlength="10" placeholder="XX-XXXXXXX" value="${esc((state.settings && state.settings.ein) || '')}" />
+        </div>
+        <div class="field"><label>VA withholding account</label>
+          <input id="s-vaAcct" value="${esc((state.settings && state.settings.vaAccount) || '')}" />
+        </div>
+        <div class="field"><label>VEC / UI account</label>
+          <input id="s-vaUi" value="${esc((state.settings && state.settings.vaUiAccount) || '')}" />
+        </div>
+        <div class="field"><label>Default vacation hours / year</label>
+          <input id="s-vacHours" type="number" min="0" step="0.01" value="${esc((state.settings && state.settings.vacationHoursPerYear) || 0)}" />
+        </div>
+        <div class="field"><label>Default PTO hours / year</label>
+          <input id="s-ptoHours" type="number" min="0" step="0.01" value="${esc((state.settings && state.settings.ptoHoursPerYear) || 0)}" />
+        </div>
+      </div>
+      <p class="hint">Period is Wednesday through Tuesday. Payday is the Wednesday after that Tuesday. Vacation and PTO balances reset to these defaults every January 1. Extra FIT/VA adds to calculated tax. Archive requires two confirms and the last name typed.</p>
+      <div class="row-actions">
+        <button class="btn btn-secondary" id="btn-apply-leave">Apply this year’s defaults to all employees</button>
+        <button class="btn btn-secondary" id="btn-save-payroll-settings">Save payroll settings</button>
+        <button class="btn btn-secondary" id="btn-open-p15t">Open IRS Pub 15-T (2026)</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="section-title">Payroll data folder</div>
+      ${
+        encOn
+          ? ''
+          : `<div class="warn-banner">OS encryption unavailable — data is in your user folder only</div>`
+      }
+      <p class="hint">Employee files never live next to the .exe. This folder is not wiped by updates. Shop books live beside it under MooresBodyShop\\books and receipts.</p>
+      <div class="path-box">${esc((state.meta && (state.meta.payrollPath || state.meta.dataPath)) || '')}</div>
+      <div class="row-actions">
+        <button class="btn btn-secondary" id="btn-open-payroll-folder">Open payroll folder</button>
+        <button class="btn btn-secondary" id="btn-export-enc">Export encrypted backup</button>
+        <button class="btn btn-secondary" id="btn-export-json">Export decrypted JSON backup</button>
+        <button class="btn btn-secondary" id="btn-import">Import backup</button>
+      </div>
+      <p class="hint" style="margin-top:12px">Encrypted backups can only be opened by the same Windows user. Use decrypted JSON to move the shop to another PC — that file contains SSNs.</p>
+    </div>
+
+    <div class="card">
+      <div class="section-title">Encryption</div>
+      <p>${
+        encOn
+          ? 'Windows DPAPI encryption is on. <code>employees.json.enc</code> is encrypted at rest for this Windows user.'
+          : 'OS encryption unavailable — data is in your user folder only.'
+      }</p>
+    </div>`;
+}
+
+function bindPayrollSettings() {
   const pubBtn = document.getElementById('btn-open-p15t');
   if (pubBtn) {
     pubBtn.addEventListener('click', async () => {
@@ -2188,16 +2305,75 @@ function bindSettings() {
       }
     });
   }
+  const openPayroll = document.getElementById('btn-open-payroll-folder');
+  if (openPayroll) {
+    openPayroll.addEventListener('click', async () => {
+      try {
+        if (api.openPayrollFolder) await api.openPayrollFolder();
+        else await api.openDataFolder();
+      } catch {
+        toast('Could not open the payroll folder.', 'err');
+      }
+    });
+  }
+  const savePay = document.getElementById('btn-save-payroll-settings');
+  if (savePay) {
+    savePay.addEventListener('click', async () => {
+      try {
+        state.settings = await api.saveSettings({
+          ein: (document.getElementById('s-ein') && document.getElementById('s-ein').value) || '',
+          vaAccount: (document.getElementById('s-vaAcct') && document.getElementById('s-vaAcct').value) || '',
+          vaUiAccount: (document.getElementById('s-vaUi') && document.getElementById('s-vaUi').value) || '',
+          vacationHoursPerYear: Number(document.getElementById('s-vacHours').value) || 0,
+          ptoHoursPerYear: Number(document.getElementById('s-ptoHours').value) || 0
+        });
+        toast('Payroll settings saved.', 'ok');
+        render();
+      } catch {
+        toast('Could not save payroll settings.', 'err');
+      }
+    });
+  }
+}
 
-  document.getElementById('btn-open-folder').addEventListener('click', async () => {
-    try {
-      await api.openDataFolder();
-    } catch {
-      toast('Could not open the data folder.', 'err');
-    }
-  });
+function bindSettings() {
+  const openFolder = document.getElementById('btn-open-folder');
+  if (openFolder) {
+    openFolder.addEventListener('click', async () => {
+      try {
+        await api.openDataFolder();
+      } catch {
+        toast('Could not open the data folder.', 'err');
+      }
+    });
+  }
 
-  document.getElementById('btn-export-enc').addEventListener('click', async () => {
+  const saveShop = document.getElementById('btn-save-shop');
+  if (saveShop) {
+    saveShop.addEventListener('click', async () => {
+      if (!state.books) state.books = window.MooresBooks.emptyBooks();
+      state.books.company = state.books.company || {};
+      state.books.company.address = state.books.company.address || {};
+      state.books.company.name = document.getElementById('s-co-name').value.trim() || "Moore's Body Shop";
+      state.books.company.phone = document.getElementById('s-co-phone').value.trim();
+      state.books.company.address.street = document.getElementById('s-co-street').value.trim();
+      state.books.company.address.city = document.getElementById('s-co-city').value.trim();
+      state.books.company.address.state = document.getElementById('s-co-state').value.trim();
+      state.books.company.address.zip = document.getElementById('s-co-zip').value.trim();
+      state.books.settings = state.books.settings || {};
+      state.books.settings.mechRate = Number(document.getElementById('s-mech').value) || 90;
+      state.books.settings.bodyRate = Number(document.getElementById('s-body').value) || 55;
+      state.books.settings.taxRate = Number(document.getElementById('s-tax').value);
+      if (!Number.isFinite(state.books.settings.taxRate)) state.books.settings.taxRate = 5.3;
+      state.books.settings.laborCogsEnabled = document.getElementById('s-labor-cogs').value === 'on';
+      await persistBooks();
+      toast('Company and rates saved.', 'ok');
+      render();
+    });
+  }
+
+  const exportEnc = document.getElementById('btn-export-enc');
+  if (exportEnc) exportEnc.addEventListener('click', async () => {
     try {
       const res = await api.exportEncrypted();
       if (res && res.ok) toast('Encrypted backup saved.', 'ok');
@@ -2206,7 +2382,8 @@ function bindSettings() {
     }
   });
 
-  document.getElementById('btn-export-json').addEventListener('click', async () => {
+  const exportJson = document.getElementById('btn-export-json');
+  if (exportJson) exportJson.addEventListener('click', async () => {
     const choice = await modal({
       title: 'Export decrypted JSON?',
       body: 'This file contains Social Security numbers and pay amounts. Anyone with the file can read it. Store it only on a private drive.',
@@ -2224,7 +2401,8 @@ function bindSettings() {
     }
   });
 
-  document.getElementById('btn-import').addEventListener('click', async () => {
+  const importBtn = document.getElementById('btn-import');
+  if (importBtn) importBtn.addEventListener('click', async () => {
     const choice = await modal({
       title: 'Import backup',
       body: '<p><strong>Merge</strong> adds or updates employees from the backup.<br><strong>Replace</strong> wipes the current database and loads the backup.</p>',
@@ -2286,32 +2464,24 @@ function bindSettings() {
     });
   }
 
-  document.getElementById('btn-save-settings').addEventListener('click', async () => {
+  const saveSettingsBtn = document.getElementById('btn-save-settings');
+  if (saveSettingsBtn) saveSettingsBtn.addEventListener('click', async () => {
     try {
       const updateUrl = document.getElementById('s-updateUrl').value.trim();
       const checkOnStartup = document.getElementById('s-startup').value === 'on';
-      const vacationHoursPerYear = Number(document.getElementById('s-vacHours').value) || 0;
-      const ptoHoursPerYear = Number(document.getElementById('s-ptoHours').value) || 0;
-      const ein = (document.getElementById('s-ein') && document.getElementById('s-ein').value) || '';
-      const vaAccount = (document.getElementById('s-vaAcct') && document.getElementById('s-vaAcct').value) || '';
-      const vaUiAccount = (document.getElementById('s-vaUi') && document.getElementById('s-vaUi').value) || '';
       state.settings = await api.saveSettings({
         updateUrl,
-        checkOnStartup,
-        vacationHoursPerYear,
-        ptoHoursPerYear,
-        ein,
-        vaAccount,
-        vaUiAccount
+        checkOnStartup
       });
-      toast('Settings saved.', 'ok');
+      toast('Update settings saved.', 'ok');
       render();
     } catch {
       toast('Could not save settings.', 'err');
     }
   });
 
-  document.getElementById('btn-check-upd').addEventListener('click', async () => {
+  const checkUpd = document.getElementById('btn-check-upd');
+  if (checkUpd) checkUpd.addEventListener('click', async () => {
     const updateUrl = document.getElementById('s-updateUrl').value.trim();
     try {
       state.settings = await api.saveSettings({
@@ -2346,7 +2516,8 @@ function bindSettings() {
     render();
   });
 
-  document.getElementById('btn-dl-upd').addEventListener('click', async () => {
+  const dlUpd = document.getElementById('btn-dl-upd');
+  if (dlUpd) dlUpd.addEventListener('click', async () => {
     state.update.phase = 'downloading';
     render();
     const res = await api.downloadUpdate();
@@ -2356,7 +2527,8 @@ function bindSettings() {
     }
   });
 
-  document.getElementById('btn-restart-upd').addEventListener('click', async () => {
+  const restartUpd = document.getElementById('btn-restart-upd');
+  if (restartUpd) restartUpd.addEventListener('click', async () => {
     await api.installUpdate();
   });
 }
@@ -2372,7 +2544,12 @@ function render() {
     chip.className = 'chip chip-warn';
   }
 
-  if (state.view === 'employees') {
+  const booksViews = ['dashboard', 'ar', 'ap', 'gl', 'inventory'];
+  if (booksViews.includes(state.view) && window.MooresBooksUi) {
+    if (!state.books) state.books = window.MooresBooks.emptyBooks();
+    root.innerHTML = window.MooresBooksUi.render(booksCtx());
+    window.MooresBooksUi.bind(booksCtx());
+  } else if (state.view === 'employees') {
     root.innerHTML = renderEmployees();
     bindEmployees();
   } else if (state.view === 'add') {
@@ -2415,6 +2592,10 @@ function render() {
         await downloadPdf(html, `Paystubs-${payday}.pdf`, 'paystubs');
       });
     });
+  } else if (state.view === 'payroll-settings') {
+    root.innerHTML = renderPayrollSettings();
+    bindPayrollSettings();
+    bindSettings();
   } else if (state.view === 'reports') {
     root.innerHTML = renderReports();
     bindReports();
@@ -2441,6 +2622,14 @@ async function boot() {
     state.meta = await api.getMeta();
     state.settings = await api.getSettings();
     state.data = await api.loadData();
+    try {
+      const loaded = await api.loadBooks();
+      if (loaded && loaded.ok && loaded.books) state.books = loaded.books;
+      else state.books = window.MooresBooks ? window.MooresBooks.emptyBooks() : { accounts: [], receipts: [], journal: [] };
+    } catch {
+      state.books = window.MooresBooks ? window.MooresBooks.emptyBooks() : { accounts: [], receipts: [], journal: [] };
+      toast('Could not open shop books. Payroll data was not changed.', 'err');
+    }
     if (syncAllLeaveBalances()) {
       try {
         await persist();
@@ -2491,7 +2680,7 @@ async function boot() {
       state.update.phase = 'downloaded';
       state.update.info = payload.info || state.update.info;
     }
-    if (state.view === 'settings') render();
+    if (state.view === 'settings' || state.view === 'payroll-settings') render();
   });
 
   setNav(state.view);

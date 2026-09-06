@@ -19,7 +19,7 @@ function createWindow() {
     height: 880,
     minWidth: 1100,
     minHeight: 720,
-    title: "Moore's Body Shop — Payroll",
+    title: "Moore's Body Shop",
     backgroundColor: '#f4f5f8',
     autoHideMenuBar: true,
     show: false,
@@ -82,8 +82,30 @@ function registerIpc() {
 
   ipcMain.handle('data:openFolder', async () => {
     await store.ensureDirs();
+    const result = await shell.openPath(store.shopRoot());
+    return { ok: !result, message: result || null };
+  });
+
+  ipcMain.handle('data:openPayrollFolder', async () => {
+    await store.ensureDirs();
     const result = await shell.openPath(store.dataRoot());
     return { ok: !result, message: result || null };
+  });
+
+  ipcMain.handle('books:load', async () => {
+    try {
+      return { ok: true, books: await store.loadBooks() };
+    } catch (err) {
+      return { ok: false, message: err && err.message ? String(err.message) : 'Could not load books.' };
+    }
+  });
+
+  ipcMain.handle('books:save', async (_event, data) => {
+    try {
+      return await store.saveBooks(data);
+    } catch (err) {
+      return { ok: false, message: err && err.message ? String(err.message) : 'Could not save books.' };
+    }
   });
 
   ipcMain.handle('app:openPub15t', async () => {
@@ -207,6 +229,62 @@ function registerIpc() {
       return { ok: true, path: dest, rel: path.relative(store.reportsDir(), dest) };
     } catch (err) {
       return { ok: false, message: err && err.message ? String(err.message) : 'Could not create PDF.' };
+    } finally {
+      if (win && !win.isDestroyed()) win.destroy();
+      await fsp.unlink(tmp).catch(() => {});
+    }
+  });
+
+  ipcMain.handle('receipts:savePdf', async (_event, payload) => {
+    const html = payload && payload.html;
+    const fileName = payload && payload.fileName;
+    if (!html || !fileName) return { ok: false, message: 'Missing receipt content.' };
+    const tmp = path.join(os.tmpdir(), `mbsp-rcpt-${Date.now()}-${process.pid}.html`);
+    let win = null;
+    try {
+      await fsp.writeFile(tmp, String(html), 'utf8');
+      win = new BrowserWindow({
+        show: false,
+        width: 900,
+        height: 1100,
+        webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false }
+      });
+      await win.loadFile(tmp);
+      const pdf = await win.webContents.printToPDF({
+        printBackground: true,
+        pageSize: 'Letter',
+        preferCSSPageSize: true,
+        margins: { marginType: 'none' }
+      });
+      const dest = await store.saveReceiptPdf(fileName, pdf);
+      return { ok: true, path: dest };
+    } catch (err) {
+      return { ok: false, message: err && err.message ? String(err.message) : 'Could not create PDF.' };
+    } finally {
+      if (win && !win.isDestroyed()) win.destroy();
+      await fsp.unlink(tmp).catch(() => {});
+    }
+  });
+
+  ipcMain.handle('print:html', async (_event, html) => {
+    if (!html) return { ok: false, message: 'Missing print content.' };
+    const tmp = path.join(os.tmpdir(), `mbsp-print-${Date.now()}-${process.pid}.html`);
+    let win = null;
+    try {
+      await fsp.writeFile(tmp, String(html), 'utf8');
+      win = new BrowserWindow({
+        show: false,
+        width: 900,
+        height: 1100,
+        webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false }
+      });
+      await win.loadFile(tmp);
+      await new Promise((resolve) => {
+        win.webContents.print({ silent: false, printBackground: true }, () => resolve());
+      });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, message: err && err.message ? String(err.message) : 'Print failed.' };
     } finally {
       if (win && !win.isDestroyed()) win.destroy();
       await fsp.unlink(tmp).catch(() => {});

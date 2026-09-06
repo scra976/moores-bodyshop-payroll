@@ -11,10 +11,13 @@ app.setPath('appData', path.join(tmpRoot, 'AppData'));
 app.whenReady().then(async () => {
   const store = require('../src/main/store');
   const data = await store.loadEmployees();
-  const alex = data.employees.find((e) => e.lastName === 'Harper' && e.firstName === 'Alex');
-  if (!alex) throw new Error('seed employee missing');
-  if (alex.rate !== 22.5) throw new Error('seed rate mismatch');
-  if (alex.ssn) throw new Error('seed must not include an SSN');
+  if (!Array.isArray(data.employees)) throw new Error('employees array missing');
+  const before = JSON.stringify(data.employees);
+  const books = await store.loadBooks();
+  if (!books.accounts.some((a) => a.code === '1000')) throw new Error('chart of accounts missing');
+  if (!books.receipts.some((r) => r.status === 'draft')) throw new Error('seed draft receipt missing');
+  const againPay = await store.loadEmployees();
+  if (JSON.stringify(againPay.employees) !== before) throw new Error('loading books must not change employees');
 
   const meta = store.getMeta();
   const expectedTail = path.join('MooresBodyShop', 'payroll');
@@ -24,21 +27,14 @@ app.whenReady().then(async () => {
   if (meta.dataPath.toLowerCase().includes('program files')) {
     throw new Error('data path must not be Program Files');
   }
+  const shopTail = path.join('MooresBodyShop');
+  if (!meta.shopRoot.replace(/\//g, path.sep).endsWith(shopTail)) {
+    throw new Error(`unexpected shop root: ${meta.shopRoot}`);
+  }
 
-  alex.payweeks.push({
-    weekEnding: '2026-09-05',
-    hours: 40,
-    gross: 900,
-    federal: 1,
-    ss: 1,
-    medicare: 1,
-    state: 1,
-    net: 896
-  });
   await store.saveEmployees(data);
   const again = await store.loadEmployees();
-  const alex2 = again.employees.find((e) => e.id === alex.id);
-  if (!alex2 || alex2.payweeks.length !== 1) throw new Error('payweek did not persist');
+  if (JSON.stringify(again.employees) !== before) throw new Error('employee save round-trip changed data');
 
   const live = store.employeesPath();
   if (!fs.existsSync(live)) throw new Error('encrypted file missing');

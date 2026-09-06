@@ -1,4 +1,4 @@
-; Leave %APPDATA%\MooresBodyShop\ (payroll data) on uninstall.
+; Leave %APPDATA%\MooresBodyShop\ (books, payroll, receipts, backups) on uninstall.
 ; First-time Setup shows the wizard. In-app updates (--updated / isUpdated) stay silent.
 
 !macro customInit
