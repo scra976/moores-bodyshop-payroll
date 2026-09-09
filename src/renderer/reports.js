@@ -213,8 +213,8 @@
     return String((week && week.checkNumber) || '').trim();
   }
 
-  function deductionBlock(week, ytd) {
-    const rows = tax && tax.stubDeductionRows ? tax.stubDeductionRows(week) : [];
+  function deductionBlock(week, ytd, emp) {
+    const rows = tax && tax.stubDeductionRows ? tax.stubDeductionRows(week, emp) : [];
     const filled = rows.map((r) => {
       let y = round2(r.ytd);
       if (!y) {
@@ -243,7 +243,7 @@
     const period = `${week.periodStart || '—'} – ${week.periodEnd || week.weekEnding || '—'}`;
     const checkNo = checkNumberOf(week);
     const checkLine = checkNo ? `<div class="kv"><b>Check No.</b> ${esc(checkNo)}</div>` : '';
-    const extraDed = deductionBlock(week, ytd);
+    const extraDed = deductionBlock(week, ytd, emp);
     const inner = `<div class="page">
       ${header(co, 'Employee pay stub')}
       <div class="grid2">

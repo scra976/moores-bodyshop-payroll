@@ -630,7 +630,7 @@ function deductionEditorHtml(emp) {
   return `
     <div class="card">
       <div class="section-title">Deductions &amp; loans</div>
-      <p class="hint">Child support and garnishments are court-ordered. A loan is money the shop lent this person, paid back on the paycheck (never more than the remaining balance). Internal names never print on the stub.</p>
+      <p class="hint">Child support and garnishments are court-ordered. A loan is money the shop lent this person, paid back on the paycheck (never more than the remaining balance — remaining starts as the original amount). The printed stub shows Loan or Loan 2, not the internal name.</p>
       ${rows || '<p class="muted">No deductions on this employee.</p>'}
       <div class="row-actions">
         <button type="button" class="btn btn-secondary" id="btn-add-deduction">Add deduction</button>

@@ -287,6 +287,28 @@ const dated = {
 const datedPay = tax.computePay(dated, 22, { payday: '2026-09-09' });
 assert(datedPay.childSupport === 0 && datedPay.deductions.length === 0, 'future start date does not withhold');
 
+const loanUnstarted = {
+  ...wesley,
+  deductions: [
+    {
+      id: 'loan0',
+      type: 'loan',
+      name: 'Tool loan 2026',
+      method: 'flat',
+      amount: 40,
+      originalAmount: 80,
+      remaining: 0,
+      ytd: 0,
+      status: 'Active'
+    }
+  ]
+};
+const loanUnstartedPay = tax.computePay(loanUnstarted, 22);
+assert(loanUnstartedPay.loans === 40, `new loan with remaining 0 still withholds ${loanUnstartedPay.loans}`);
+const unstartedStub = tax.stubDeductionRows({ deductions: loanUnstartedPay.deductions }, loanUnstarted);
+assert(unstartedStub.length === 1 && unstartedStub[0].label === 'Loan', `stub loan label ${JSON.stringify(unstartedStub)}`);
+assert(!unstartedStub.some((r) => /Tool loan/i.test(r.label)), 'internal name not on stub');
+
 const loanEmp = {
   ...wesley,
   deductions: [

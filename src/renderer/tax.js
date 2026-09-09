@@ -538,8 +538,25 @@
   function deductionApplies(row, payday) {
     if (!row) return false;
     if (deductionStatus(row.status) !== 'Active') return false;
+    if (deductionType(row.type) === 'loan') {
+      const rem = loanRemaining(row);
+      if (rem <= 0 && round2(row.originalAmount) > 0) return false;
+    }
     if (!payday) return true;
     return isoOnOrAfter(payday, row.start) && isoOnOrBefore(payday, row.end);
+  }
+
+  function loanRemaining(row) {
+    const orig = round2(Math.max(0, Number(row && row.originalAmount) || 0));
+    const ytd = round2(Math.max(0, Number(row && row.ytd) || 0));
+    const status = deductionStatus(row && row.status);
+    if (status === 'Paid off') return round2(Math.max(0, Number(row && row.remaining) || 0));
+    if (row && row.remaining != null && row.remaining !== '') {
+      const rem = round2(Number(row.remaining));
+      if (Number.isFinite(rem) && rem > 0) return rem;
+      if (rem <= 0 && ytd > 0) return 0;
+    }
+    return orig;
   }
 
   function listDeductions(employee) {
@@ -560,7 +577,7 @@
         end: String(row.end || ''),
         ytd: round2(Math.max(0, Number(row.ytd) || 0)),
         originalAmount: round2(Math.max(0, Number(row.originalAmount) || 0)),
-        remaining: round2(Math.max(0, Number(row.remaining != null && row.remaining !== '' ? row.remaining : row.originalAmount) || 0))
+        remaining: loanRemaining(row)
       });
     }
     if (out.length) return out;
@@ -629,8 +646,8 @@
         row.method === 'percent' ? round2(base * (row.amount / 100)) : round2(row.amount);
       if (row.type === 'loan') {
         const bal = round2(row.remaining);
-        if (bal <= 0) continue;
-        requested = round2(Math.min(requested, bal));
+        if (round2(row.originalAmount) > 0 && bal <= 0) continue;
+        if (bal > 0) requested = round2(Math.min(requested, bal));
       }
       const taken = round2(Math.min(Math.max(0, requested), remaining));
       remaining = round2(remaining - taken);
@@ -713,17 +730,27 @@
     return emp;
   }
 
-  function stubDeductionRows(week) {
+  function resolveItemType(item, emp) {
+    if (!item) return 'garnishment';
+    const stored = deductionType(item.type);
+    if (stored === 'loan' || stored === 'child_support' || stored === 'other') return stored;
+    const match = emp && Array.isArray(emp.deductions)
+      ? emp.deductions.find((d) => d && d.id && d.id === item.id)
+      : null;
+    if (match) return deductionType(match.type);
+    if (item.remaining != null || item.originalAmount != null) return 'loan';
+    return stored;
+  }
+
+  function stubDeductionRows(week, emp) {
     const items = (week && Array.isArray(week.deductions) ? week.deductions : []).filter(
       (i) => i && round2(i.amount) > 0
     );
     if (items.length) {
-      const cs = items.filter((i) => deductionType(i.type) === 'child_support');
-      const gn = items.filter((i) => {
-        const t = deductionType(i.type);
-        return t === 'garnishment' || t === 'other';
-      });
-      const ln = items.filter((i) => deductionType(i.type) === 'loan');
+      const typed = items.map((i) => ({ ...i, type: resolveItemType(i, emp) }));
+      const cs = typed.filter((i) => i.type === 'child_support');
+      const gn = typed.filter((i) => i.type === 'garnishment' || i.type === 'other');
+      const ln = typed.filter((i) => i.type === 'loan');
       const label = (base, n, total) => {
         if (total <= 1 || n === 1) return base;
         return `${base} ${n}`;
@@ -752,6 +779,9 @@
     }
     if (round2(week && week.garnishments) > 0) {
       rows.push({ label: 'Garnishment', amount: round2(week.garnishments), ytd: round2(week.garnishmentsYtd) });
+    }
+    if (round2(week && week.loans) > 0) {
+      rows.push({ label: 'Loan', amount: round2(week.loans), ytd: round2(week.loansYtd || week.loans) });
     }
     return rows;
   }
@@ -875,6 +905,7 @@
     applyPostTaxDeductions,
     applyDeductionYtd,
     applyLoanBalances,
+    loanRemaining,
     stubDeductionRows,
     federalPub15T,
     virginiaWithholding,
