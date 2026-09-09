@@ -60,6 +60,17 @@ const state = {
     message: '',
     percent: 0
   },
+  qbImport: {
+    kind: 'customers',
+    fileName: '',
+    path: '',
+    headers: [],
+    rows: [],
+    mapping: {},
+    replaceDupes: false,
+    log: null,
+    error: ''
+  },
   reports: {
     section: 'books',
     year: String(new Date().getFullYear()),
@@ -443,6 +454,15 @@ async function persistBooks() {
   return true;
 }
 
+function isExpert() {
+  return Boolean(state.settings && state.settings.uiMode === 'expert');
+}
+
+function applyModeClass() {
+  document.body.classList.toggle('mode-expert', isExpert());
+  document.body.classList.toggle('mode-novice', !isExpert());
+}
+
 function booksCtx() {
   return {
     state,
@@ -537,7 +557,9 @@ function blankDeduction() {
     status: 'Active',
     start: '',
     end: '',
-    ytd: 0
+    ytd: 0,
+    originalAmount: 0,
+    remaining: 0
   };
 }
 
@@ -550,35 +572,53 @@ function deductionEditorHtml(emp) {
   };
   const rows = (emp.deductions || [])
     .map((d) => {
-      const amtLabel = d.method === 'percent' ? 'Percent of disposable/net' : 'Amount per pay period $';
+      const isLoan = d.type === 'loan';
+      const amtLabel = isLoan
+        ? d.method === 'percent'
+          ? 'Percent of net'
+          : 'Per-period payment $'
+        : d.method === 'percent'
+          ? 'Percent of disposable/net'
+          : 'Amount per pay period $';
+      const statusOpts = isLoan
+        ? optionList(['Active', 'Paused', 'Paid off'], d.status)
+        : optionList(['Active', 'Paused', 'Ended'], d.status);
+      const loanFields = isLoan
+        ? `<div class="field"><label>Original loan amount $</label>
+            <input data-ded="${esc(d.id)}" data-df="originalAmount" type="number" min="0" step="0.01" value="${esc(d.originalAmount || 0)}" />
+          </div>
+          <div class="field"><label>Remaining balance $</label>
+            <input data-ded="${esc(d.id)}" data-df="remaining" type="number" min="0" step="0.01" value="${esc(d.remaining || 0)}" />
+          </div>`
+        : `<div class="field"><label>Agency / payee (not on stub)</label>
+            <input data-ded="${esc(d.id)}" data-df="payee" value="${esc(d.payee || '')}" />
+          </div>
+          <div class="field"><label>End date</label>
+            <input data-ded="${esc(d.id)}" data-df="end" type="date" value="${esc(d.end || '')}" />
+          </div>`;
       return `<div class="line" data-ded-card="${esc(d.id)}">
         <div class="line-top"><span>${esc(d.name || 'New deduction')}</span>
           <button type="button" class="btn btn-sm btn-danger" data-del-ded="${esc(d.id)}">Delete</button>
         </div>
         <div class="grid grid-3">
           <div class="field"><label>Type</label>
-            <select data-ded="${esc(d.id)}" data-df="type">${optionList(['child_support', 'garnishment', 'other'], d.type, types)}</select>
+            <select data-ded="${esc(d.id)}" data-df="type">${optionList(['child_support', 'garnishment', 'other', 'loan'], d.type, types)}</select>
           </div>
           <div class="field span-2"><label>Internal name (shop only — never on the stub)</label>
-            <input data-ded="${esc(d.id)}" data-df="name" value="${esc(d.name)}" placeholder="VA DCSE case 1234" />
+            <input data-ded="${esc(d.id)}" data-df="name" value="${esc(d.name)}" placeholder="${isLoan ? 'Tool loan 2026' : 'VA DCSE case 1234'}" />
           </div>
           <div class="field"><label>Method</label>
-            <select data-ded="${esc(d.id)}" data-df="method">${optionList(['flat', 'percent'], d.method, { flat: 'Dollars per paycheck', percent: 'Percent of disposable/net' })}</select>
+            <select data-ded="${esc(d.id)}" data-df="method">${optionList(['flat', 'percent'], d.method, { flat: 'Dollars per paycheck', percent: isLoan ? 'Percent of net' : 'Percent of disposable/net' })}</select>
           </div>
           <div class="field"><label>${esc(amtLabel)}</label>
             <input data-ded="${esc(d.id)}" data-df="amount" type="number" min="0" step="0.01" value="${esc(d.amount)}" />
           </div>
-          <div class="field"><label>Agency / payee (not on stub)</label>
-            <input data-ded="${esc(d.id)}" data-df="payee" value="${esc(d.payee || '')}" />
-          </div>
+          ${loanFields}
           <div class="field"><label>Status</label>
-            <select data-ded="${esc(d.id)}" data-df="status">${optionList(['Active', 'Paused', 'Ended'], d.status)}</select>
+            <select data-ded="${esc(d.id)}" data-df="status">${statusOpts}</select>
           </div>
           <div class="field"><label>Start date</label>
             <input data-ded="${esc(d.id)}" data-df="start" type="date" value="${esc(d.start || '')}" />
-          </div>
-          <div class="field"><label>End date</label>
-            <input data-ded="${esc(d.id)}" data-df="end" type="date" value="${esc(d.end || '')}" />
           </div>
           <div class="field"><label>YTD withheld</label>
             <input value="${esc(money(d.ytd))}" readonly />
@@ -589,8 +629,8 @@ function deductionEditorHtml(emp) {
     .join('');
   return `
     <div class="card">
-      <div class="section-title">Court-ordered deductions</div>
-      <p class="hint">Add as many child-support or garnishment orders as needed. Each row keeps its own YTD. Only Active rows that cover that payday withhold. Child support is taken first, then garnishments. Internal names stay in the shop app and never print on the stub.</p>
+      <div class="section-title">Deductions &amp; loans</div>
+      <p class="hint">Child support and garnishments are court-ordered. A loan is money the shop lent this person, paid back on the paycheck (never more than the remaining balance). Internal names never print on the stub.</p>
       ${rows || '<p class="muted">No deductions on this employee.</p>'}
       <div class="row-actions">
         <button type="button" class="btn btn-secondary" id="btn-add-deduction">Add deduction</button>
@@ -1073,8 +1113,13 @@ function bindEmployees() {
       const field = el.getAttribute('data-df');
       const row = (emp.deductions || []).find((d) => d.id === id);
       if (!row) return;
-      if (field === 'amount') row.amount = Number(el.value) || 0;
-      else row[field] = el.value;
+      if (field === 'amount' || field === 'originalAmount' || field === 'remaining') {
+        row[field] = Number(el.value) || 0;
+        if (field === 'originalAmount' && !row.remaining) row.remaining = row.originalAmount;
+      } else row[field] = el.value;
+      if (field === 'type' && el.value === 'loan' && !row.remaining && row.originalAmount) {
+        row.remaining = row.originalAmount;
+      }
       markDirty();
     };
     el.addEventListener('input', apply);
@@ -1365,7 +1410,9 @@ function payStatsHtml(calc) {
   const applied = calc.pay.deductions || [];
   for (const d of applied) {
     if (!d.amount) continue;
-    bits.push(`${d.name || (d.type === 'child_support' ? 'Child support' : 'Garnishment')}: ${money(d.amount)}`);
+    bits.push(
+      `${d.name || (d.type === 'loan' ? 'Loan' : d.type === 'child_support' ? 'Child support' : 'Garnishment')}: ${money(d.amount)}`
+    );
   }
   const fitNote = `${money(calc.pay.federalComputed)} calculated + ${money(calc.pay.federalExtra)} extra`;
   const vaNote = `${money(calc.pay.stateComputed)} calculated + ${money(calc.pay.stateExtra)} extra`;
@@ -1397,15 +1444,15 @@ function payStatsHtml(calc) {
         <div class="stat"><div class="k">Net</div><div class="v pos">${money(calc.pay.net)}</div></div>
       </div>
       ${bits.length ? `<p class="hint">${esc(bits.join(' · '))}</p>` : ''}
-      ${fitWhy ? `<p class="disclaimer">${esc(fitWhy)}</p>` : ''}
+      ${fitWhy && isExpert() ? `<p class="disclaimer expert-only">${esc(fitWhy)}</p>` : ''}
       <div class="table-wrap">
         <table class="data">
           <thead><tr><th>FIT</th><th>SS</th><th>Med</th><th>VA</th><th>Pre-tax</th><th>Hourly</th></tr></thead>
           <tbody><tr>
-            <td>${money(calc.pay.federal)}<div class="hint">${esc(fitNote)}</div></td>
+            <td>${money(calc.pay.federal)}${isExpert() ? `<div class="hint expert-only">${esc(fitNote)}</div>` : ''}</td>
             <td>${money(calc.pay.ss)}</td>
             <td>${money(calc.pay.medicare)}</td>
-            <td>${money(calc.pay.state)}<div class="hint">${esc(vaNote)}</div></td>
+            <td>${money(calc.pay.state)}${isExpert() ? `<div class="hint expert-only">${esc(vaNote)}</div>` : ''}</td>
             <td>${money(calc.pay.pretax)}</td>
             <td>${money(calc.pay.hourly)}</td>
           </tr></tbody>
@@ -1632,9 +1679,10 @@ function renderTimeclocks() {
     <div class="card">
       <div class="section-title">Estimated pay</div>
       ${stats}
-      <p class="disclaimer">Federal withholding per IRS Pub 15-T (2026) Worksheet 1A. Extra federal/state is added on top of calculated tax, never a replacement. Social Security 6.2% up to $${esc(String(tax.SS_WAGE_BASE))} YTD. Medicare 1.45% (rounded up to the cent when the leftover mill is 0.4 or more). Virginia $8,750 single / $17,500 married, then VA-4 exemptions. No local VA tax. No employee VA UI.</p>
+      <p class="disclaimer expert-only">Federal withholding per IRS Pub 15-T (2026) Worksheet 1A. Extra federal/state is added on top of calculated tax, never a replacement. Social Security 6.2% up to $${esc(String(tax.SS_WAGE_BASE))} YTD. Medicare 1.45% (rounded up to the cent when the leftover mill is 0.4 or more). Virginia $8,750 single / $17,500 married, then VA-4 exemptions. No local VA tax. No employee VA UI.</p>
+      <p class="hint novice-only">Hours, gross, taxes, and net for this Wednesday payday. Transfer saves the week to the employee.</p>
       <div class="row-actions">
-        <button class="btn btn-primary" id="tc-transfer"${calc && !archivedSelected ? '' : ' disabled'}>Transfer to profile</button>
+        <button class="btn btn-primary" id="tc-transfer"${calc && !archivedSelected ? '' : ' disabled'}>${isExpert() ? 'Transfer to profile' : 'Save this week’s pay'}</button>
       </div>
     </div>`;
 }
@@ -1791,6 +1839,7 @@ function bindTimeclocks() {
         pretax: calc.pay.pretax,
         childSupport: calc.pay.childSupport,
         garnishments: calc.pay.garnishments,
+        loans: calc.pay.loans,
         deductions: JSON.parse(JSON.stringify(calc.pay.deductions || [])),
         checkNumber: String(state.time.checkNumber || '').trim(),
         net: calc.pay.net,
@@ -1816,6 +1865,7 @@ function bindTimeclocks() {
             state: record.state,
             childSupport: record.childSupport,
             garnishments: record.garnishments,
+            loans: calc.pay.loans,
             pretax: record.pretax
           });
           if (posted.ok) {
@@ -2326,6 +2376,73 @@ function shopCompany() {
   return { ...c, address: { ...DEFAULT_ADDRESS, ...a } };
 }
 
+function renderQbImportCard() {
+  const Imp = window.MooresImport;
+  const st = state.qbImport || {};
+  const kinds = {
+    customers: 'Customers (AR)',
+    vendors: 'Vendors (AP)',
+    employees: 'Employees',
+    items: 'Items / parts',
+    paychecks: 'Paychecks / payroll history'
+  };
+  const fields = Imp && Imp.FIELDS[st.kind] ? Imp.FIELDS[st.kind] : [];
+  const headerOpts = ['', ...(st.headers || [])];
+  const mapper = (st.headers || []).length
+    ? `<div class="section-title">Column mapper</div>
+        <p class="hint">Match each shop field to a column from the file. Leave a field blank to skip it. Taxes are never calculated on import — only mapped amounts are stored.</p>
+        <div class="grid grid-2">
+          ${fields
+            .map(
+              ([key, label]) => `<div class="field"><label>${esc(label)}</label>
+                <select data-imap="${esc(key)}">${optionList(headerOpts, st.mapping[key] || '', { '': '— skip —' })}</select></div>`
+            )
+            .join('')}
+        </div>
+        <label class="chip" style="margin-top:12px"><input type="checkbox" id="imp-replace"${st.replaceDupes ? ' checked' : ''} /> Replace duplicates</label>
+        <p class="hint">Default is off: existing customers, vendors, employees, items, and paychecks (same person + pay date + check no) are skipped.</p>
+        <div class="row-actions">
+          <button type="button" class="btn btn-primary" id="imp-run">Import</button>
+        </div>`
+    : '';
+  const previewRows = (st.rows || []).slice(0, 8);
+  const preview =
+    previewRows.length && (st.headers || []).length
+      ? `<div class="table-wrap" style="margin-top:12px"><table class="data">
+          <thead><tr>${st.headers.map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead>
+          <tbody>${previewRows
+            .map((r) => `<tr>${st.headers.map((h) => `<td>${esc(r[h] || '')}</td>`).join('')}</tr>`)
+            .join('')}</tbody>
+        </table></div>
+        <p class="hint">${st.rows.length} data row${st.rows.length === 1 ? '' : 's'} in file.</p>`
+      : '';
+  const log = st.log
+    ? `<div class="disclaimer" style="margin-top:12px">Imported ${st.log.imported} · Skipped ${st.log.skipped}
+        ${(st.log.notes || []).map((n) => `<div>${esc(n)}</div>`).join('')}
+        ${(st.log.errors || []).slice(0, 12).map((n) => `<div>${esc(n)}</div>`).join('')}
+        ${(st.log.errors || []).length > 12 ? `<div>…and ${st.log.errors.length - 12} more.</div>` : ''}
+      </div>`
+    : '';
+  return `
+    <div class="card">
+      <div class="section-title">Import QuickBooks</div>
+      <p class="hint">Do not pick a .QBW company file. In QuickBooks export a CSV or Excel list (Customer Center, Vendor Center, Employee list, Item list, or Paycheck / Payroll Summary), then import that file here.</p>
+      <div class="grid grid-2">
+        <div class="field"><label>What to import</label>
+          <select id="imp-kind">${optionList(Object.keys(kinds), st.kind, kinds)}</select></div>
+        <div class="field"><label>File</label>
+          <input value="${esc(st.fileName || 'No file selected')}" readonly /></div>
+      </div>
+      <div class="row-actions">
+        <button type="button" class="btn btn-secondary" id="imp-pick">Choose CSV / Excel file</button>
+      </div>
+      ${st.error ? `<div class="warn-banner">${esc(st.error)}</div>` : ''}
+      ${mapper}
+      ${preview}
+      ${log}
+    </div>`;
+}
+
 function renderSettings() {
   const u = state.update;
   let updateDetail = 'No check yet.';
@@ -2362,7 +2479,7 @@ function renderSettings() {
           <input id="s-body" type="number" step="0.01" value="${esc(bs.bodyRate != null ? bs.bodyRate : 55)}" /></div>
         <div class="field"><label>Parts tax rate %</label>
           <input id="s-tax" type="number" step="0.01" value="${esc(bs.taxRate != null ? bs.taxRate : 5.3)}" /></div>
-        <div class="field"><label>Direct labor COGS (5100)</label>
+        <div class="field expert-only"><label>Direct labor COGS (5100)</label>
           <select id="s-labor-cogs">${optionList(['off', 'on'], bs.laborCogsEnabled ? 'on' : 'off', { off: 'Off (default) — labor is revenue only', on: 'On' })}</select></div>
         <div class="field"><label>App version</label><input value="${esc((state.meta && state.meta.version) || '')}" readonly /></div>
         <div class="field"><label>App ID</label><input value="${esc((state.meta && state.meta.appId) || '')}" readonly /></div>
@@ -2382,6 +2499,20 @@ function renderSettings() {
         <button class="btn btn-secondary" id="btn-open-folder">Open data folder</button>
       </div>
     </div>
+
+    <div class="card">
+      <div class="section-title">Display mode</div>
+      <p class="hint">Novice hides account numbers and tax worksheets. Expert shows GL codes, FIFO layers, and Pub 15-T / VA breakdowns. Switching modes does not change any data.</p>
+      <div class="field" style="max-width:280px">
+        <label>Mode</label>
+        <select id="s-ui-mode">${optionList(['novice', 'expert'], (state.settings && state.settings.uiMode) || 'novice', { novice: 'Novice (default)', expert: 'Expert' })}</select>
+      </div>
+      <div class="row-actions">
+        <button class="btn btn-primary" id="btn-save-mode">Save mode</button>
+      </div>
+    </div>
+
+    ${renderQbImportCard()}
 
     <div class="card">
       <div class="section-title">Updates</div>
@@ -2516,6 +2647,91 @@ function bindPayrollSettings() {
   }
 }
 
+function bindQbImport() {
+  const Imp = window.MooresImport;
+  if (!Imp) return;
+  const kind = document.getElementById('imp-kind');
+  if (kind) {
+    kind.addEventListener('change', () => {
+      state.qbImport.kind = kind.value;
+      if (state.qbImport.headers && state.qbImport.headers.length) {
+        state.qbImport.mapping = Imp.guessMapping(state.qbImport.kind, state.qbImport.headers);
+      }
+      state.qbImport.log = null;
+      render();
+    });
+  }
+  const pick = document.getElementById('imp-pick');
+  if (pick) {
+    pick.addEventListener('click', async () => {
+      try {
+        const chosen = await api.pickImportFile();
+        if (!chosen || chosen.canceled || !chosen.path) return;
+        const parsed = await api.parseImportFile(chosen.path);
+        if (!parsed || !parsed.ok) {
+          state.qbImport.error = (parsed && parsed.message) || 'Could not read this file. Export CSV from QuickBooks.';
+          state.qbImport.headers = [];
+          state.qbImport.rows = [];
+          render();
+          return;
+        }
+        state.qbImport.error = '';
+        state.qbImport.path = chosen.path;
+        state.qbImport.fileName = chosen.name || parsed.fileName;
+        state.qbImport.headers = parsed.headers || [];
+        state.qbImport.rows = parsed.rows || [];
+        state.qbImport.mapping = Imp.guessMapping(state.qbImport.kind, state.qbImport.headers);
+        state.qbImport.log = null;
+        render();
+      } catch {
+        state.qbImport.error = 'Could not read this file. Export CSV from QuickBooks and try again.';
+        render();
+      }
+    });
+  }
+  document.querySelectorAll('[data-imap]').forEach((sel) => {
+    sel.addEventListener('change', () => {
+      state.qbImport.mapping[sel.getAttribute('data-imap')] = sel.value;
+    });
+  });
+  const replace = document.getElementById('imp-replace');
+  if (replace) {
+    replace.addEventListener('change', () => {
+      state.qbImport.replaceDupes = replace.checked;
+    });
+  }
+  const run = document.getElementById('imp-run');
+  if (run) {
+    run.addEventListener('click', async () => {
+      const st = state.qbImport;
+      const result = Imp.applyImport({
+        kind: st.kind,
+        rows: st.rows,
+        mapping: st.mapping,
+        replaceDupes: st.replaceDupes,
+        books: state.books,
+        employees: state.data.employees,
+        uid
+      });
+      if (!result.ok) {
+        toast('Import failed.', 'err');
+        return;
+      }
+      state.books = result.books;
+      state.data.employees = result.employees;
+      st.log = result.log;
+      try {
+        if (st.kind === 'employees' || st.kind === 'paychecks') await persist();
+        if (st.kind === 'customers' || st.kind === 'vendors' || st.kind === 'items') await persistBooks();
+        toast(`Imported ${result.log.imported}, skipped ${result.log.skipped}.`, result.log.imported ? 'ok' : 'err');
+        render();
+      } catch {
+        toast('Imported in memory but could not save.', 'err');
+      }
+    });
+  }
+}
+
 function bindSettings() {
   const openFolder = document.getElementById('btn-open-folder');
   if (openFolder) {
@@ -2551,6 +2767,23 @@ function bindSettings() {
       render();
     });
   }
+
+  const saveMode = document.getElementById('btn-save-mode');
+  if (saveMode) {
+    saveMode.addEventListener('click', async () => {
+      try {
+        const uiMode = document.getElementById('s-ui-mode').value === 'expert' ? 'expert' : 'novice';
+        state.settings = await api.saveSettings({ uiMode });
+        applyModeClass();
+        toast(uiMode === 'expert' ? 'Expert mode on. Data was not changed.' : 'Novice mode on. Data was not changed.', 'ok');
+        render();
+      } catch {
+        toast('Could not save mode.', 'err');
+      }
+    });
+  }
+
+  bindQbImport();
 
   const exportEnc = document.getElementById('btn-export-enc');
   if (exportEnc) exportEnc.addEventListener('click', async () => {
@@ -2714,6 +2947,7 @@ function bindSettings() {
 }
 
 function render() {
+  applyModeClass();
   const root = document.getElementById('view-root');
   const chip = document.getElementById('enc-chip');
   if (state.meta && state.meta.encryptionAvailable) {

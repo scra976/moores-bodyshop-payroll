@@ -16,6 +16,7 @@
     { code: '1000', name: 'Cash', type: 'asset' },
     { code: '1100', name: 'Accounts Receivable', type: 'asset' },
     { code: '1200', name: 'Parts Inventory', type: 'asset' },
+    { code: '1250', name: 'Employee Loans Receivable', type: 'asset' },
     { code: '1500', name: 'Equipment', type: 'asset' },
     { code: '1600', name: 'Accumulated Depreciation', type: 'contra-asset' },
     { code: '2000', name: 'Accounts Payable', type: 'liability' },
@@ -882,6 +883,7 @@
     const state = round2(payload.state);
     const childSupport = round2(payload.childSupport);
     const garnishments = round2(payload.garnishments);
+    const loans = round2(payload.loans);
     const pretax = round2(payload.pretax);
     const erSS = ss;
     const erMed = round2(Math.max(0, medicare - additionalMedicare));
@@ -905,6 +907,7 @@
     if (state) lines.push({ account: '2240', debit: 0, credit: state, memo: 'VA WH' });
     if (erFica) lines.push({ account: '2300', debit: 0, credit: erFica, memo: 'Employer FICA' });
     if (accrued) lines.push({ account: '2200', debit: 0, credit: accrued, memo: 'Garnishment / child support' });
+    if (loans) lines.push({ account: '1250', debit: 0, credit: loans, memo: 'Employee loan repayment' });
     if (pretax) lines.push({ account: '2200', debit: 0, credit: pretax, memo: 'Pre-tax deduction' });
     const posted = postJournal(books, {
       date: payday,

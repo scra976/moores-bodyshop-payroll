@@ -505,13 +505,15 @@
   const DEDUCTION_TYPES = {
     child_support: 'Child support',
     garnishment: 'Garnishment',
-    other: 'Other court-ordered'
+    other: 'Other court-ordered',
+    loan: 'Loan'
   };
 
   function deductionType(raw) {
     const t = String(raw || '').toLowerCase().replace(/\s+/g, '_');
     if (t === 'child_support' || t === 'childsupport' || t === 'child-support') return 'child_support';
     if (t === 'other' || t === 'other_court_ordered' || t === 'other-court-ordered') return 'other';
+    if (t === 'loan' || t === 'employee_loan' || t === 'employee-loan') return 'loan';
     return 'garnishment';
   }
 
@@ -519,6 +521,7 @@
     const s = String(raw || 'Active').trim().toLowerCase();
     if (s === 'paused' || s === 'pause') return 'Paused';
     if (s === 'ended' || s === 'end' || s === 'inactive') return 'Ended';
+    if (s === 'paid off' || s === 'paid_off' || s === 'paid-off' || s === 'paid') return 'Paid off';
     return 'Active';
   }
 
@@ -555,7 +558,9 @@
         status: deductionStatus(row.status),
         start: String(row.start || ''),
         end: String(row.end || ''),
-        ytd: round2(Math.max(0, Number(row.ytd) || 0))
+        ytd: round2(Math.max(0, Number(row.ytd) || 0)),
+        originalAmount: round2(Math.max(0, Number(row.originalAmount) || 0)),
+        remaining: round2(Math.max(0, Number(row.remaining != null && row.remaining !== '' ? row.remaining : row.originalAmount) || 0))
       });
     }
     if (out.length) return out;
@@ -608,7 +613,7 @@
     let remaining = round2(Math.max(0, afterTax));
     const disposable = remaining;
     const listed = listDeductions(employee);
-    const order = { child_support: 0, garnishment: 1, other: 2 };
+    const order = { child_support: 0, garnishment: 1, other: 2, loan: 3 };
     const ranked = listed
       .map((row, index) => ({ row, index }))
       .filter((x) => deductionApplies(x.row, payday))
@@ -619,11 +624,18 @@
       });
     const items = [];
     for (const { row } of ranked) {
-      const requested =
-        row.method === 'percent' ? round2(disposable * (row.amount / 100)) : round2(row.amount);
+      const base = row.type === 'loan' ? remaining : disposable;
+      let requested =
+        row.method === 'percent' ? round2(base * (row.amount / 100)) : round2(row.amount);
+      if (row.type === 'loan') {
+        const bal = round2(row.remaining);
+        if (bal <= 0) continue;
+        requested = round2(Math.min(requested, bal));
+      }
       const taken = round2(Math.min(Math.max(0, requested), remaining));
       remaining = round2(remaining - taken);
       if (!taken) continue;
+      const nextRemaining = row.type === 'loan' ? round2(Math.max(0, round2(row.remaining) - taken)) : null;
       items.push({
         id: row.id,
         type: row.type,
@@ -631,12 +643,16 @@
         method: row.method,
         payee: row.payee,
         amount: taken,
-        ytd: round2((Number(row.ytd) || 0) + taken)
+        ytd: round2((Number(row.ytd) || 0) + taken),
+        remaining: nextRemaining
       });
     }
     const childSupport = round2(items.filter((i) => i.type === 'child_support').reduce((s, i) => s + i.amount, 0));
-    const garnishments = round2(items.filter((i) => i.type !== 'child_support').reduce((s, i) => s + i.amount, 0));
-    return { items, childSupport, garnishments, net: remaining, afterTax: round2(afterTax) };
+    const loans = round2(items.filter((i) => i.type === 'loan').reduce((s, i) => s + i.amount, 0));
+    const garnishments = round2(
+      items.filter((i) => i.type === 'garnishment' || i.type === 'other').reduce((s, i) => s + i.amount, 0)
+    );
+    return { items, childSupport, garnishments, loans, net: remaining, afterTax: round2(afterTax) };
   }
 
   function applyDeductionYtd(emp, newItems, prevItems) {
@@ -659,6 +675,41 @@
       const d = emp.deductions.find((x) => x.id === n.id);
       n.ytd = d ? round2(d.ytd) : round2((Number(n.ytd) || 0));
     }
+    applyLoanBalances(emp, newItems, prevItems);
+    return emp;
+  }
+
+  function applyLoanBalances(emp, newItems, prevItems) {
+    ensureDeductions(emp);
+    const prevById = {};
+    for (const p of prevItems || []) {
+      if (p && p.id) prevById[p.id] = round2(p.amount);
+    }
+    const newById = {};
+    for (const n of newItems || []) {
+      if (n && n.id) newById[n.id] = round2(n.amount);
+    }
+    for (const d of emp.deductions) {
+      if (deductionType(d.type) !== 'loan') continue;
+      const prev = prevById[d.id] || 0;
+      const next = newById[d.id] || 0;
+      let rem = round2(d.remaining);
+      if (!Number.isFinite(rem)) rem = round2(d.originalAmount);
+      rem = round2(rem + prev - next);
+      if (rem < 0) rem = 0;
+      d.remaining = rem;
+      if (rem <= 0) {
+        d.remaining = 0;
+        d.status = 'Paid off';
+      } else if (d.status === 'Paid off' && prev > 0) {
+        d.status = 'Active';
+      }
+    }
+    for (const n of newItems || []) {
+      if (deductionType(n.type) !== 'loan') continue;
+      const d = emp.deductions.find((x) => x.id === n.id);
+      if (d) n.remaining = round2(d.remaining);
+    }
     return emp;
   }
 
@@ -668,20 +719,28 @@
     );
     if (items.length) {
       const cs = items.filter((i) => deductionType(i.type) === 'child_support');
-      const gn = items.filter((i) => deductionType(i.type) !== 'child_support');
-      const label = (kind, n, total) => {
-        const base = kind === 'cs' ? 'Child Support' : 'Garnishment';
+      const gn = items.filter((i) => {
+        const t = deductionType(i.type);
+        return t === 'garnishment' || t === 'other';
+      });
+      const ln = items.filter((i) => deductionType(i.type) === 'loan');
+      const label = (base, n, total) => {
         if (total <= 1 || n === 1) return base;
         return `${base} ${n}`;
       };
       return [
         ...cs.map((i, n) => ({
-          label: label('cs', n + 1, cs.length),
+          label: label('Child Support', n + 1, cs.length),
           amount: round2(i.amount),
           ytd: round2(i.ytd)
         })),
         ...gn.map((i, n) => ({
-          label: label('gn', n + 1, gn.length),
+          label: label('Garnishment', n + 1, gn.length),
+          amount: round2(i.amount),
+          ytd: round2(i.ytd)
+        })),
+        ...ln.map((i, n) => ({
+          label: label('Loan', n + 1, ln.length),
           amount: round2(i.amount),
           ytd: round2(i.ytd)
         }))
@@ -735,6 +794,7 @@
     const applied = applyPostTaxDeductions(employee, afterTax, payday);
     const childSupport = applied.childSupport;
     const garnishments = applied.garnishments;
+    const loans = applied.loans;
     const net = applied.net;
 
     return {
@@ -761,6 +821,7 @@
       stateExtra: va.extra,
       childSupport,
       garnishments,
+      loans,
       deductions: applied.items,
       totalTaxes,
       net,
@@ -813,6 +874,7 @@
     ensureDeductions,
     applyPostTaxDeductions,
     applyDeductionYtd,
+    applyLoanBalances,
     stubDeductionRows,
     federalPub15T,
     virginiaWithholding,

@@ -67,6 +67,15 @@ const stubChk = R.paystubHtml(
 assert(stubChk.includes('Check No.') && stubChk.includes('1042'), 'check number on stub');
 assert(stubChk.includes('Child Support'), 'child support row when present');
 assert(!stubChk.includes('VA DCSE case 1234'), 'internal name stays off the stub');
+const stubLoan = R.paystubHtml(
+  emp,
+  { ...emp.payweeks[0], deductions: [{ id: 'ln1', type: 'loan', name: 'Tool loan 2026', amount: 25, ytd: 25 }] },
+  ytd,
+  { name: "Moore's Body Shop" },
+  {}
+);
+assert(stubLoan.includes('Loan'), 'loan row when withheld');
+assert(!stubLoan.includes('Tool loan 2026'), 'loan internal name off stub');
 const w2 = R.w2Html(emp, 2026, ytd, { name: "Moore's Body Shop" }, {});
 assert(w2.includes('Form W-2 worksheet'), 'w2 worksheet');
 const q = R.quarterWindow(2026, 3);

@@ -4,8 +4,10 @@ const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron')
 const path = require('path');
 const os = require('os');
 const fsp = require('fs/promises');
+const fs = require('fs');
 const store = require('./store');
 const updater = require('./updater');
+const qbParse = require('./qb-parse');
 
 let mainWindow = null;
 
@@ -23,7 +25,7 @@ function createWindow() {
     backgroundColor: '#f4f5f8',
     autoHideMenuBar: true,
     show: false,
-    icon: path.join(__dirname, 'icon.ico'),
+    icon: path.join(__dirname, 'moores-m.ico'),
     webPreferences: {
       preload: path.join(__dirname, '../preload/preload.js'),
       contextIsolation: true,
@@ -263,6 +265,44 @@ function registerIpc() {
     } finally {
       if (win && !win.isDestroyed()) win.destroy();
       await fsp.unlink(tmp).catch(() => {});
+    }
+  });
+
+  ipcMain.handle('import:pick', async () => {
+    const win = BrowserWindow.getFocusedWindow() || mainWindow;
+    const choice = await dialog.showOpenDialog(win, {
+      title: 'Import QuickBooks export',
+      properties: ['openFile'],
+      filters: [
+        { name: 'QuickBooks exports', extensions: ['csv', 'xlsx', 'xls', 'txt'] },
+        { name: 'All files', extensions: ['*'] }
+      ]
+    });
+    if (choice.canceled || !choice.filePaths || !choice.filePaths[0]) {
+      return { ok: false, canceled: true };
+    }
+    return { ok: true, path: choice.filePaths[0], name: path.basename(choice.filePaths[0]) };
+  });
+
+  ipcMain.handle('import:parse', async (_event, filePath) => {
+    try {
+      const buf = fs.readFileSync(String(filePath || ''));
+      const table = qbParse.parseTableBuffer(filePath, buf);
+      if (!table.ok) return table;
+      return {
+        ok: true,
+        headers: table.headers,
+        rows: table.rows,
+        kind: table.kind,
+        fileName: path.basename(String(filePath || ''))
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        message:
+          (err && err.message ? String(err.message) : 'Could not read this file.') +
+          ' Export CSV from QuickBooks and try again.'
+      };
     }
   });
 

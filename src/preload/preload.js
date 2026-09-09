@@ -25,6 +25,8 @@ contextBridge.exposeInMainWorld('mooresPayroll', {
   openPayrollFolder: () => ipcRenderer.invoke('data:openPayrollFolder'),
   saveReceiptPdf: (payload) => ipcRenderer.invoke('receipts:savePdf', payload),
   printHtml: (html) => ipcRenderer.invoke('print:html', html),
+  pickImportFile: () => ipcRenderer.invoke('import:pick'),
+  parseImportFile: (filePath) => ipcRenderer.invoke('import:parse', filePath),
   onUpdateEvent: (callback) => {
     const listener = (_event, payload) => {
       if (typeof callback === 'function') callback(payload);

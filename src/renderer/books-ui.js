@@ -2,6 +2,11 @@
 
 (function (root) {
   const B = () => root.MooresBooks;
+  let showCodes = false;
+
+  function isExpert(ctx) {
+    return Boolean(ctx && ctx.state && ctx.state.settings && ctx.state.settings.uiMode === 'expert');
+  }
 
   const TITLES = {
     dashboard: ['Dashboard', 'Shop snapshot'],
@@ -68,7 +73,10 @@
       .sortAccounts(books.accounts)
       .filter((a) => !a.inactive && (!types || types.includes(a.type)));
     return list
-      .map((a) => `<option value="${esc(a.code)}"${a.code === selected ? ' selected' : ''}>${esc(a.code)} ${esc(a.name)}</option>`)
+      .map((a) => {
+        const label = showCodes ? `${a.code} ${a.name}` : a.name;
+        return `<option value="${esc(a.code)}"${a.code === selected ? ' selected' : ''}>${esc(label)}</option>`;
+      })
       .join('');
   }
 
@@ -269,7 +277,7 @@
           <div id="rcpt-lines">${lines || '<p class="hint">Add parts or labor.</p>'}</div>
           <div class="row-actions">
             <button type="button" class="btn btn-secondary" id="rcpt-save"${dis}>Save draft</button>
-            <button type="button" class="btn btn-primary" id="rcpt-finalize"${dis}>Finalize &amp; post</button>
+            <button type="button" class="btn btn-primary" id="rcpt-finalize"${dis}>${showCodes ? 'Finalize &amp; post' : 'Finalize receipt'}</button>
             <button type="button" class="btn btn-secondary" id="rcpt-pdf">Download PDF</button>
             <button type="button" class="btn btn-danger" id="rcpt-print">Print</button>
           </div>
@@ -535,14 +543,14 @@
         ${lines || '<p class="hint">Add expense or parts lines.</p>'}
         <div class="row-actions">
           <button type="button" class="btn btn-secondary" id="bill-save"${dis}>Save draft</button>
-          <button type="button" class="btn btn-primary" id="bill-post"${dis}>Post bill</button>
+          <button type="button" class="btn btn-primary" id="bill-post"${dis}>${showCodes ? 'Post bill' : 'Save and post bill'}</button>
           ${
             bill && bill.status === 'posted' && Number(bill.balance) > 0
               ? `<button type="button" class="btn btn-primary" id="bill-pay">Pay ${money(bill.balance)}</button>`
               : ''
           }
         </div>
-        <p class="hint">Parts purchases debit 1200 when stocked. Operating bills debit the expense account you choose. Drafts do not post.</p>
+        <p class="hint">${showCodes ? 'Parts purchases debit 1200 when stocked. Operating bills debit the expense account you choose. Drafts do not post.' : 'Parts bills add to inventory. Expense bills use the category you pick. Drafts do not post.'}</p>
       </div>`;
   }
 
@@ -564,7 +572,7 @@
         .sortAccounts(books.accounts)
         .map((a) => {
           const bal = B().signedBalance(books, a.code);
-          return `<tr><td>${esc(a.code)}</td><td>${esc(a.name)}</td><td>${esc(a.type)}</td>
+          return `<tr>${showCodes ? `<td>${esc(a.code)}</td>` : ''}<td>${esc(a.name)}</td><td>${esc(a.type)}</td>
             <td>${a.system ? 'System' : 'Custom'}</td><td class="num">${money(bal)}</td></tr>`;
         })
         .join('');
@@ -580,7 +588,7 @@
           <div class="row-actions"><button class="btn btn-primary" id="acct-add">Add account</button></div>
         </div>
         <div class="card"><div class="table-wrap"><table class="data">
-          <thead><tr><th>Code</th><th>Name</th><th>Type</th><th></th><th class="num">Balance</th></tr></thead>
+          <thead><tr>${showCodes ? '<th>Code</th>' : ''}<th>Name</th><th>Type</th><th></th><th class="num">Balance</th></tr></thead>
           <tbody>${rows}</tbody>
         </table></div></div>`;
     }
@@ -591,7 +599,7 @@
           const lines = (j.lines || [])
             .map(
               (ln) => `<tr class="jnl-line">
-                <td></td><td></td><td>${esc(ln.account)} ${esc((B().accountByCode(books, ln.account) || {}).name || '')}</td>
+                <td></td><td></td><td>${esc(showCodes ? ln.account + ' ' : '')}${esc((B().accountByCode(books, ln.account) || {}).name || '')}</td>
                 <td>${esc(ln.memo || '')}</td>
                 <td class="num">${ln.debit ? money(ln.debit) : ''}</td>
                 <td class="num">${ln.credit ? money(ln.credit) : ''}</td></tr>`
@@ -603,7 +611,7 @@
         })
         .join('');
       return `${bar}
-        <div class="card">
+        <div class="card expert-only">
           <div class="section-title">Manual journal</div>
           <div class="grid grid-2">
             <div class="field"><label>Date</label><input id="jnl-date" type="date" value="${esc(B().todayIso())}" /></div>
@@ -660,7 +668,7 @@
     const tb = B().trialBalance(books);
     const rows = tb.rows
       .map(
-        (r) => `<tr><td>${esc(r.code)}</td><td>${esc(r.name)}</td>
+        (r) => `<tr>${showCodes ? `<td>${esc(r.code)}</td>` : ''}<td>${esc(r.name)}</td>
           <td class="num">${r.debit ? money(r.debit) : ''}</td>
           <td class="num">${r.credit ? money(r.credit) : ''}</td></tr>`
       )
@@ -669,9 +677,9 @@
       <div class="card">
         <p class="hint">${tb.balanced ? 'In balance.' : 'OUT OF BALANCE — no new posts should be possible until this is fixed.'}</p>
         <div class="table-wrap"><table class="data">
-          <thead><tr><th>Code</th><th>Account</th><th class="num">Debits</th><th class="num">Credits</th></tr></thead>
+          <thead><tr>${showCodes ? '<th>Code</th>' : ''}<th>Account</th><th class="num">Debits</th><th class="num">Credits</th></tr></thead>
           <tbody>${rows}
-            <tr><td></td><td><strong>Total</strong></td><td class="num"><strong>${money(tb.debit)}</strong></td>
+            <tr>${showCodes ? '<td></td>' : ''}<td><strong>Total</strong></td><td class="num"><strong>${money(tb.debit)}</strong></td>
               <td class="num"><strong>${money(tb.credit)}</strong></td></tr>
           </tbody>
         </table></div>
@@ -686,8 +694,10 @@
         const val = B().fifoValue(p);
         return `<tr>
           <td>${esc(p.partNumber)}</td><td>${esc(p.description)}</td>
-          <td class="num">${qty}</td><td class="num">${money(B().avgCost(p))}</td>
-          <td class="num">${money(p.sellPrice)}</td><td class="num">${money(val)}</td>
+          <td class="num">${qty}</td>
+          ${showCodes ? `<td class="num">${money(B().avgCost(p))}</td>` : ''}
+          <td class="num">${money(p.sellPrice)}</td>
+          ${showCodes ? `<td class="num">${money(val)}</td>` : ''}
           <td><button class="btn btn-sm btn-secondary" data-inv-hist="${esc(p.partNumber)}">History</button></td></tr>`;
       })
       .join('');
@@ -715,18 +725,18 @@
           <div class="field"><label>Date</label><input id="inv-date" type="date" value="${esc(B().todayIso())}" /></div>
         </div>
         <div class="row-actions">
-          <button class="btn btn-primary" id="inv-recv">Receive (Dr 1200 / Cr 1000)</button>
+          <button class="btn btn-primary" id="inv-recv">${showCodes ? 'Receive (Dr 1200 / Cr 1000)' : 'Receive parts (pay cash)'}</button>
           <button class="btn btn-secondary" id="inv-adj">Quantity adjust</button>
         </div>
-        <p class="hint">Receiving here pays cash. To buy on account, enter an AP parts bill. Issuing happens when you finalize an AR receipt.</p>
+        <p class="hint">${showCodes ? 'Receiving here pays cash (Dr 1200 / Cr 1000). FIFO layers are used when a receipt is finalized.' : 'Receiving here pays cash. To buy on account, enter a bill. Parts come off inventory when you finalize a receipt.'}</p>
       </div>
       <div class="card"><div class="table-wrap"><table class="data">
-        <thead><tr><th>Part #</th><th>Description</th><th class="num">Qty</th><th class="num">FIFO cost</th><th class="num">Sell</th><th class="num">Value</th><th></th></tr></thead>
+        <thead><tr><th>Part #</th><th>Description</th><th class="num">Qty</th>${showCodes ? '<th class="num">FIFO cost</th>' : ''}<th class="num">Price</th>${showCodes ? '<th class="num">Value</th>' : ''}<th></th></tr></thead>
         <tbody>${rows || '<tr><td colspan="7" class="muted">No parts yet.</td></tr>'}</tbody>
       </table></div></div>
       ${
-        item
-          ? `<div class="card"><div class="section-title">History · ${esc(item.partNumber)}</div>
+        item && showCodes
+          ? `<div class="card expert-only"><div class="section-title">FIFO / history · ${esc(item.partNumber)}</div>
               <div class="table-wrap"><table class="data">
                 <thead><tr><th>Date</th><th>Type</th><th class="num">Qty</th><th class="num">Cost</th><th>Ref</th><th>Receipt #</th></tr></thead>
                 <tbody>${hist || '<tr><td colspan="6" class="muted">No history.</td></tr>'}</tbody>
@@ -738,7 +748,7 @@
   function plTable(pl) {
     const block = (title, group, negate) => {
       const rows = (group.rows || [])
-        .map((r) => `<tr><td>${esc(r.code)} ${esc(r.name)}</td><td class="num">${money(r.balance)}</td></tr>`)
+        .map((r) => `<tr><td>${esc(showCodes ? r.code + ' ' : '')}${esc(r.name)}</td><td class="num">${money(r.balance)}</td></tr>`)
         .join('');
       return `<tr><td><strong>${esc(title)}</strong></td><td class="num"><strong>${money(group.total)}</strong></td></tr>${rows}`;
     };
@@ -1418,6 +1428,7 @@
 
   function render(ctx) {
     ui(ctx.state);
+    showCodes = isExpert(ctx);
     const view = ctx.state.view;
     if (view === 'dashboard') return renderDashboard(ctx);
     if (view === 'ar') return renderAr(ctx);

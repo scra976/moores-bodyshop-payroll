@@ -82,7 +82,8 @@ function defaultSettings() {
     ptoHoursPerYear: 40,
     ein: '',
     vaAccount: '',
-    vaUiAccount: ''
+    vaUiAccount: '',
+    uiMode: 'novice'
   };
 }
 
@@ -382,7 +383,8 @@ function sanitizeSettings(patch) {
     ptoHoursPerYear: Number.isFinite(pto) && pto >= 0 ? Math.round(pto * 100) / 100 : 40,
     ein: String(next.ein || '').replace(/[^\d]/g, '').slice(0, 9),
     vaAccount: String(next.vaAccount || '').trim().slice(0, 32),
-    vaUiAccount: String(next.vaUiAccount || '').trim().slice(0, 32)
+    vaUiAccount: String(next.vaUiAccount || '').trim().slice(0, 32),
+    uiMode: String(next.uiMode || 'novice').toLowerCase() === 'expert' ? 'expert' : 'novice'
   };
   return allowed;
 }

@@ -287,6 +287,40 @@ const dated = {
 const datedPay = tax.computePay(dated, 22, { payday: '2026-09-09' });
 assert(datedPay.childSupport === 0 && datedPay.deductions.length === 0, 'future start date does not withhold');
 
+const loanEmp = {
+  ...wesley,
+  deductions: [
+    {
+      id: 'loan1',
+      type: 'loan',
+      name: 'Tool loan 2026',
+      method: 'flat',
+      amount: 50,
+      originalAmount: 80,
+      remaining: 80,
+      status: 'Active'
+    }
+  ]
+};
+const loan1 = tax.computePay(loanEmp, 22);
+assert(loan1.loans === 50, `loan withhold ${loan1.loans}`);
+assert(loan1.net === tax.round2(314.14 - 50), `loan net ${loan1.net}`);
+tax.applyDeductionYtd(loanEmp, loan1.deductions, []);
+assert(loanEmp.deductions[0].remaining === 30, `remaining after first ${loanEmp.deductions[0].remaining}`);
+const loan2 = tax.computePay(loanEmp, 22);
+assert(loan2.loans === 30, `last loan payment ${loan2.loans}`);
+tax.applyDeductionYtd(loanEmp, loan2.deductions, []);
+assert(loanEmp.deductions[0].remaining === 0, 'loan balance zero');
+assert(loanEmp.deductions[0].status === 'Paid off', 'loan paid off');
+const stubLoan = tax.stubDeductionRows({
+  deductions: [
+    { type: 'loan', name: 'Tool loan 2026', amount: 50, ytd: 50 },
+    { type: 'loan', name: 'Uniform loan', amount: 10, ytd: 10 }
+  ]
+});
+assert(stubLoan[0].label === 'Loan' && stubLoan[1].label === 'Loan 2', `loan labels ${stubLoan.map((r) => r.label)}`);
+assert(!stubLoan.some((r) => /Tool loan/i.test(r.label)), 'internal loan name stays off stub');
+
 const sortA = [
   { lastName: 'smith', firstName: 'Ann' },
   { lastName: 'Adams', firstName: 'bob' },

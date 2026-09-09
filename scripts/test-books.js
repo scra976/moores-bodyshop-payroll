@@ -14,6 +14,7 @@ function close(a, b, msg) {
 
 const seeded = books.seedBooks();
 assert(seeded.accounts.some((a) => a.code === '1000'), 'cash account');
+assert(seeded.accounts.some((a) => a.code === '1250'), 'employee loans receivable');
 assert(seeded.accounts.some((a) => a.code === '5100'), 'direct labor COGS exists');
 assert(seeded.settings.laborCogsEnabled === false, 'labor COGS default off');
 assert(seeded.receipts.length === 1 && seeded.receipts[0].status === 'draft', 'one draft receipt');
@@ -109,6 +110,31 @@ const pcr = pay.entry.lines.reduce((s, l) => s + l.credit, 0);
 close(pdr, pcr, 'payroll balanced');
 close(pay.entry.lines.find((l) => l.account === '6000').debit, 400, 'Dr payroll expense');
 close(pay.entry.lines.find((l) => l.account === '1000').credit, 300, 'Cr net cash');
+
+const loanPay = books.postPayrollRun(books.emptyBooks(), {
+  employeeId: 'e1',
+  employeeName: 'Test Tech',
+  periodEnd: '2026-09-08',
+  payday: '2026-09-09',
+  gross: 400,
+  net: 250,
+  federal: 40,
+  ss: 24.8,
+  medicare: 5.8,
+  additionalMedicare: 0,
+  state: 20,
+  childSupport: 9.4,
+  garnishments: 0,
+  loans: 50,
+  pretax: 0
+});
+assert(loanPay.ok, loanPay.error);
+close(loanPay.entry.lines.find((l) => l.account === '1250').credit, 50, 'Cr 1250 loan');
+close(
+  loanPay.entry.lines.reduce((s, l) => s + l.debit, 0),
+  loanPay.entry.lines.reduce((s, l) => s + l.credit, 0),
+  'loan payroll balanced'
+);
 
 const added = books.addAccount(books.emptyBooks(), { code: '6950', name: 'Uniforms', type: 'opex' });
 assert(added.ok && added.account.code === '6950', 'user can add accounts');

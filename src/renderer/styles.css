@@ -500,6 +500,9 @@ table.data th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 table.data tbody tr:hover { background: #f8f9fc; }
 
+body.mode-novice .expert-only { display: none !important; }
+body.mode-expert .novice-only { display: none !important; }
+
 .check-no-input {
   width: 7.5rem;
   max-width: 100%;

@@ -219,6 +219,7 @@
       let y = round2(r.ytd);
       if (!y) {
         if (/^Child Support/i.test(r.label)) y = round2(ytd && ytd.childSupport);
+        else if (/^Loan/i.test(r.label)) y = round2(ytd && ytd.loans);
         else y = round2(ytd && ytd.garnishments);
       }
       return { ...r, ytd: y };
