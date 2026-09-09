@@ -2,6 +2,7 @@
 
 (function (root) {
   const B = () => root.MooresBooks;
+  const Bank = () => root.MooresBanking;
   let showCodes = false;
 
   function isExpert(ctx) {
@@ -12,7 +13,7 @@
     dashboard: ['Dashboard', 'Shop snapshot'],
     ar: ['Accounts Receivable', 'Customers, ROs, receipts, invoices'],
     ap: ['Accounts Payable', 'Vendors, bills, and payments'],
-    gl: ['General Ledger', 'Chart of accounts, journal, trial balance'],
+    gl: ['General Ledger', 'Chart of accounts, journal, trial balance, bank recon'],
     inventory: ['Inventory', 'Parts quantity and FIFO cost'],
     reports: ['Reports', 'P&L, balance sheet, tax, aging, payroll filings']
   };
@@ -53,10 +54,27 @@
         customerId: '',
         vendorId: '',
         reportFrom: `${new Date().getFullYear()}-01-01`,
-        reportTo: B().todayIso()
+        reportTo: B().todayIso(),
+        reconBankId: '',
+        reconId: '',
+        bankEditId: ''
       };
     }
+    if (Bank()) Bank().ensureBanks(state.books);
     return state.booksUi;
+  }
+
+  function currentBankId(ctx, selected) {
+    if (!Bank()) return '';
+    Bank().ensureBanks(ctx.state.books);
+    return selected || Bank().defaultBankId(ctx.state.books);
+  }
+
+  function bankSelectHtml(ctx, selected, id, disabled) {
+    if (!Bank()) return `<select id="${esc(id)}"${disabled ? ' disabled' : ''}><option value="">Cash</option></select>`;
+    Bank().ensureBanks(ctx.state.books);
+    const sel = currentBankId(ctx, selected);
+    return `<select id="${esc(id)}"${disabled ? ' disabled' : ''}>${Bank().bankOptionsHtml(ctx.state.books, sel, isExpert(ctx))}</select>`;
   }
 
   function tabs(items, active, attr) {
@@ -251,12 +269,16 @@
             <div class="field"><label>Payment method</label>
               <select id="rcpt-method"${dis}>
                 ${optionList(['cash', 'check', 'card', 'on_account'], receipt.paymentMethod || 'cash', {
-                  cash: 'Cash (Dr 1000)',
-                  check: 'Check (Dr 1000)',
-                  card: 'Card (Dr 1000)',
-                  on_account: 'On account / invoice (Dr 1100)'
+                  cash: showCodes ? 'Cash (bank)' : 'Cash',
+                  check: showCodes ? 'Check (bank)' : 'Check',
+                  card: showCodes ? 'Card (bank)' : 'Card',
+                  on_account: showCodes ? 'On account / invoice (AR)' : 'On account / invoice'
                 })}
               </select></div>
+            <div class="field"><label>Bank account</label>
+              ${bankSelectHtml(ctx, receipt.bankId, 'rcpt-bank', Boolean(dis))}</div>
+            <div class="field"><label>Check No.</label>
+              <input id="rcpt-check" value="${esc(receipt.checkNumber || '')}"${dis} placeholder="—" /></div>
             <div class="field"><label>Payment note</label><input id="rcpt-pay" value="${esc(receipt.paymentNote || '')}"${dis} /></div>
             <div class="field"><label>Vehicle</label><input id="rcpt-vehicle" value="${esc(receipt.vehicle || '')}" placeholder="Year / Make / Model"${dis} /></div>
             <div class="field"><label>RO #</label><input id="rcpt-ro" value="${esc(receipt.ro || '')}"${dis} /></div>
@@ -533,8 +555,12 @@
           <div class="field"><label>Vendor</label><select id="bill-vend"${dis}>${vendorOptions(books, bill && bill.vendorId)}</select></div>
           <div class="field"><label>Vendor name</label><input id="bill-vend-name" value="${esc((bill && bill.vendorName) || '')}"${dis} /></div>
           <div class="field"><label>Ref</label><input id="bill-ref" value="${esc((bill && bill.ref) || '')}"${dis} /></div>
-          <div class="field"><label>Pay immediately from cash</label>
+          <div class="field"><label>Pay immediately from bank</label>
             <select id="bill-paidnow"${dis}>${optionList(['no', 'yes'], bill && bill.paidNow ? 'yes' : 'no')}</select></div>
+          <div class="field"><label>Bank account</label>
+            ${bankSelectHtml(ctx, bill && bill.bankId, 'bill-bank', Boolean(dis))}</div>
+          <div class="field"><label>Check No.</label>
+            <input id="bill-check" value="${esc((bill && bill.checkNumber) || '')}"${dis} placeholder="—" /></div>
         </div>
         <div class="row-actions">
           <button type="button" class="btn btn-secondary" id="bill-add-exp"${dis}>+ Expense line</button>
@@ -562,7 +588,8 @@
         ['accounts', 'Chart of accounts'],
         ['journal', 'Journal'],
         ['ledger', 'Account ledger'],
-        ['trial', 'Trial balance']
+        ['trial', 'Trial balance'],
+        ['reconcile', 'Reconcile']
       ],
       u.glTab,
       'data-gl-tab'
@@ -618,18 +645,8 @@
             <div class="field"><label>Memo</label><input id="jnl-memo" /></div>
           </div>
           <div id="jnl-lines">
-            <div class="grid grid-4 jnl-edit">
-              <div class="field"><label>Account</label><select class="jnl-acct">${accountOptions(books, '1000')}</select></div>
-              <div class="field"><label>Debit</label><input class="jnl-dr" type="number" step="0.01" /></div>
-              <div class="field"><label>Credit</label><input class="jnl-cr" type="number" step="0.01" /></div>
-              <div class="field"><label>Line memo</label><input class="jnl-lm" /></div>
-            </div>
-            <div class="grid grid-4 jnl-edit">
-              <div class="field"><label>Account</label><select class="jnl-acct">${accountOptions(books, '6900')}</select></div>
-              <div class="field"><label>Debit</label><input class="jnl-dr" type="number" step="0.01" /></div>
-              <div class="field"><label>Credit</label><input class="jnl-cr" type="number" step="0.01" /></div>
-              <div class="field"><label>Line memo</label><input class="jnl-lm" /></div>
-            </div>
+            ${journalLineEditor(ctx, '1000')}
+            ${journalLineEditor(ctx, '6900')}
           </div>
           <div class="row-actions">
             <button class="btn btn-secondary" id="jnl-add-line">+ Line</button>
@@ -665,6 +682,9 @@
           </table></div>
         </div>`;
     }
+    if (u.glTab === 'reconcile') {
+      return `${bar}${renderReconcile(ctx)}`;
+    }
     const tb = B().trialBalance(books);
     const rows = tb.rows
       .map(
@@ -684,6 +704,254 @@
           </tbody>
         </table></div>
       </div>`;
+  }
+
+  function journalLineEditor(ctx, defaultAcct) {
+    const books = ctx.state.books;
+    const bankOpts = Bank()
+      ? `<option value="">—</option>${Bank().bankOptionsHtml(books, '', isExpert(ctx))}`
+      : '<option value="">—</option>';
+    return `<div class="grid grid-4 jnl-edit">
+      <div class="field"><label>Account</label><select class="jnl-acct">${accountOptions(books, defaultAcct)}</select></div>
+      <div class="field"><label>Debit</label><input class="jnl-dr" type="number" step="0.01" /></div>
+      <div class="field"><label>Credit</label><input class="jnl-cr" type="number" step="0.01" /></div>
+      <div class="field"><label>Line memo</label><input class="jnl-lm" /></div>
+      <div class="field"><label>Bank (cash lines)</label><select class="jnl-bank">${bankOpts}</select></div>
+      <div class="field"><label>Check No.</label><input class="jnl-check" placeholder="—" /></div>
+      <div class="field"><label>Payee</label><input class="jnl-payee" /></div>
+    </div>`;
+  }
+
+  function renderReconcile(ctx) {
+    if (!Bank()) return '<div class="card empty"><strong>Banking module missing.</strong></div>';
+    const books = ctx.state.books;
+    Bank().ensureBanks(books);
+    const u = ui(ctx.state);
+    const expert = isExpert(ctx);
+    const bankId = currentBankId(ctx, u.reconBankId);
+    u.reconBankId = bankId;
+    const bank = Bank().bankById(books, bankId);
+    const open = (books.reconciliations || []).find((r) => r.bankId === bankId && r.status === 'open');
+    const closed = (books.reconciliations || [])
+      .filter((r) => r.bankId === bankId && r.status === 'closed')
+      .sort((a, b) => String(b.statementDate).localeCompare(String(a.statementDate)));
+    let recon = (books.reconciliations || []).find((r) => r.id === u.reconId);
+    if (!recon || recon.bankId !== bankId) recon = open || null;
+    if (recon) u.reconId = recon.id;
+    const beginPrefill = bank ? Bank().beginningBalance(books, bank) : 0;
+    const history = closed
+      .map((r) => {
+        const reopen =
+          expert && Bank().canReopen(books, r)
+            ? `<button class="btn btn-sm btn-secondary" data-recon-reopen="${esc(r.id)}">Reopen</button>`
+            : '';
+        return `<tr>
+          <td>${esc(r.statementDate)}</td>
+          <td class="num">${money(r.statementBalance)}</td>
+          <td class="num">${money(r.difference)}</td>
+          <td>Closed</td>
+          <td>
+            <button class="btn btn-sm btn-secondary" data-recon-view="${esc(r.id)}">View</button>
+            <button class="btn btn-sm btn-secondary" data-recon-report="${esc(r.id)}">Report</button>
+            ${reopen}
+          </td>
+        </tr>`;
+      })
+      .join('');
+
+    if (!recon) {
+      return `
+        <div class="card">
+          <div class="section-title">Bank reconciliation</div>
+          <div class="grid grid-3">
+            <div class="field"><label>Bank account</label>
+              ${bankSelectHtml(ctx, bankId, 'recon-bank')}</div>
+            <div class="field"><label>Statement date</label>
+              <input id="recon-new-date" type="date" value="${esc(B().todayIso())}" /></div>
+            <div class="field"><label>Beginning (from last closed)</label>
+              <input value="${esc(money(beginPrefill))}" readonly /></div>
+          </div>
+          <p class="hint">Opening book balance is the first-recon beginning. It is not posted to the ledger. Uncleared items roll forward.</p>
+          <div class="row-actions">
+            <button class="btn btn-primary" id="recon-start">Start reconciliation</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="section-title">Closed reconciliations</div>
+          <div class="table-wrap"><table class="data">
+            <thead><tr><th>Statement date</th><th class="num">Statement</th><th class="num">Difference</th><th>Status</th><th></th></tr></thead>
+            <tbody>${history || '<tr><td colspan="5" class="muted">None yet.</td></tr>'}</tbody>
+          </table></div>
+        </div>`;
+    }
+
+    const locked = recon.status === 'closed';
+    const tot = Bank().reconTotals(books, bank, recon);
+    const dis = locked ? ' disabled' : '';
+    const checked = new Set(recon.clearedKeys || []);
+    const rows = tot.items
+      .map((ln) => {
+        const on = checked.has(ln.key);
+        return `<tr>
+          <td><input type="checkbox" data-recon-clear="${esc(ln.key)}"${on ? ' checked' : ''}${dis} /></td>
+          <td>${esc(ln.date)}</td>
+          <td>${esc(ln.type)}</td>
+          <td>${esc(ln.payee)}</td>
+          <td>${esc(ln.checkNo || '')}</td>
+          <td class="num">${money(ln.amount)}</td>
+          ${expert ? `<td>${esc(bank.glAccount || '')}</td>` : ''}
+        </tr>`;
+      })
+      .join('');
+    const atts = (recon.attachments || [])
+      .map(
+        (a) => `<li class="recon-att">
+          <span>${esc(a.name)}</span>
+          <span>
+            <button class="btn btn-sm btn-secondary" data-recon-open="${esc(a.storedName)}">Open</button>
+            ${
+              locked
+                ? ''
+                : `<button class="btn btn-sm btn-secondary" data-recon-delatt="${esc(a.storedName)}">Remove</button>`
+            }
+          </span>
+        </li>`
+      )
+      .join('');
+    const diffClass = Math.abs(tot.difference) < 0.005 ? 'pos' : 'neg';
+    const last4 = bank.last4 ? `••••${bank.last4}` : '—';
+    return `
+      <div class="card">
+        <div class="section-title">${esc(bank.name)} · ${esc(Bank().BANK_TYPES[bank.type] || '')} · ${esc(last4)}${
+          locked ? ' · Closed (read-only)' : ''
+        }</div>
+        <div class="grid grid-3">
+          <div class="field"><label>Bank account</label>
+            ${bankSelectHtml(ctx, bankId, 'recon-bank')}</div>
+          <div class="field"><label>Statement date</label>
+            <input id="recon-date" type="date" value="${esc(recon.statementDate || '')}"${dis} /></div>
+          <div class="field"><label>Statement ending balance</label>
+            <input id="recon-end" type="number" step="0.01" value="${esc(recon.statementBalance)}"${dis} /></div>
+          <div class="field"><label>Beginning balance</label>
+            <input value="${esc(tot.beginning.toFixed(2))}" readonly /></div>
+          ${expert ? `<div class="field"><label>Linked GL</label><input value="${esc(bank.glAccount || '')}" readonly /></div>` : ''}
+        </div>
+        <div class="stats">
+          <div class="stat"><div class="k">Book balance</div><div class="v">${money(tot.bookBalance)}</div></div>
+          <div class="stat"><div class="k">Statement</div><div class="v">${money(tot.statementBalance)}</div></div>
+          <div class="stat"><div class="k">Cleared in</div><div class="v">${money(tot.clearedIn)}</div></div>
+          <div class="stat"><div class="k">Cleared out</div><div class="v">${money(tot.clearedOut)}</div></div>
+          <div class="stat"><div class="k">Difference</div><div class="v ${diffClass}">${money(tot.difference)}</div></div>
+        </div>
+        <p class="hint">Check off items that appear on the statement through ${esc(
+          recon.statementDate || ''
+        )}. Uncleared items roll to the next recon. Finish requires a $0.00 difference${
+          expert ? ' unless you post an adjustment' : ''
+        }.</p>
+        <div class="table-wrap"><table class="data">
+          <thead><tr>
+            <th></th><th>Date</th><th>Type</th><th>Payee</th><th>Check</th><th class="num">Amount</th>
+            ${expert ? '<th>GL</th>' : ''}
+          </tr></thead>
+          <tbody>${rows || '<tr><td colspan="7" class="muted">No uncleared book transactions through this statement date.</td></tr>'}</tbody>
+        </table></div>
+        <div class="section-title" style="margin-top:18px">Attachments</div>
+        <p class="hint">PDF, JPG, or PNG. Copied into AppData under this recon. Kept after Finish.</p>
+        <ul class="recon-atts">${atts || '<li class="muted">No attachments.</li>'}</ul>
+        <div class="row-actions">
+          ${locked ? '' : `<button class="btn btn-secondary" id="recon-attach">Attach file</button>`}
+          ${
+            locked
+              ? `<button class="btn btn-secondary" data-recon-report="${esc(recon.id)}">Report</button>
+                 <button class="btn btn-primary" id="recon-next">Start next reconciliation</button>`
+              : `<button class="btn btn-primary" id="recon-finish">Finish</button>
+                 ${
+                   expert
+                     ? `<button class="btn btn-secondary" id="recon-finish-diff">Finish with difference</button>`
+                     : ''
+                 }`
+          }
+        </div>
+      </div>
+      <div class="card">
+        <div class="section-title">Closed reconciliations</div>
+        <div class="table-wrap"><table class="data">
+          <thead><tr><th>Statement date</th><th class="num">Statement</th><th class="num">Difference</th><th>Status</th><th></th></tr></thead>
+          <tbody>${history || '<tr><td colspan="5" class="muted">None yet.</td></tr>'}</tbody>
+        </table></div>
+      </div>`;
+  }
+
+  function cashGlOptions(ctx, selected) {
+    if (!Bank()) return accountOptions(ctx.state.books, selected || '1000', { types: ['asset'] });
+    const list = Bank().cashGlAccounts(ctx.state.books);
+    return list
+      .map((a) => {
+        const label = showCodes ? `${a.code} ${a.name}` : a.name;
+        return `<option value="${esc(a.code)}"${a.code === selected ? ' selected' : ''}>${esc(label)}</option>`;
+      })
+      .join('');
+  }
+
+  function renderBankingSettings(ctx) {
+    if (!ctx.state.books || !Bank()) return '';
+    showCodes = isExpert(ctx);
+    Bank().ensureBanks(ctx.state.books);
+    const expert = isExpert(ctx);
+    const u = ui(ctx.state);
+    const editing = (ctx.state.books.banks || []).find((b) => b.id === u.bankEditId) || Bank().defaultBank();
+    const isNew = !u.bankEditId;
+    const rows = (ctx.state.books.banks || [])
+      .map((b) => {
+        const last4 = b.last4 ? `••••${b.last4}` : '—';
+        return `<tr>
+          <td>${esc(b.name)}</td>
+          <td>${esc(Bank().BANK_TYPES[b.type] || b.type)}</td>
+          <td>${esc(b.bankName || '—')}</td>
+          <td>${esc(last4)}</td>
+          ${expert ? `<td>${esc(b.glAccount)}</td>` : ''}
+          <td class="num">${money(b.openingBalance)}</td>
+          <td><button class="btn btn-sm btn-secondary" data-edit-bank="${esc(b.id)}">Edit</button></td>
+        </tr>`;
+      })
+      .join('');
+    return `
+    <div class="card">
+      <div class="section-title">Banking</div>
+      <p class="hint">Last 4 digits only — never a full account number. Linked GL is 1000 Cash or another cash account you add on the chart. Opening book balance is the first-recon beginning; it is not posted again to the ledger.</p>
+      <div class="grid grid-3">
+        <div class="field"><label>Account name</label>
+          <input id="bank-name" value="${esc(isNew ? '' : editing.name)}" placeholder="Shop checking" /></div>
+        <div class="field"><label>Type</label>
+          <select id="bank-type">${optionList(
+            ['checking', 'savings', 'credit'],
+            isNew ? 'checking' : editing.type,
+            Bank().BANK_TYPES
+          )}</select></div>
+        <div class="field"><label>Bank name</label>
+          <input id="bank-inst" value="${esc(isNew ? '' : editing.bankName)}" placeholder="Truist" /></div>
+        <div class="field"><label>Last 4 digits</label>
+          <input id="bank-last4" inputmode="numeric" maxlength="4" value="${esc(isNew ? '' : editing.last4)}" placeholder="1234" /></div>
+        <div class="field"><label>Opening book balance</label>
+          <input id="bank-open" type="number" step="0.01" value="${esc(isNew ? '0' : editing.openingBalance)}" /></div>
+        <div class="field"><label>Opening date</label>
+          <input id="bank-opendate" type="date" value="${esc(isNew ? '' : editing.openingDate)}" /></div>
+        <div class="field"><label>Linked GL</label>
+          <select id="bank-gl">${cashGlOptions(ctx, isNew ? '1000' : editing.glAccount)}</select></div>
+      </div>
+      <div class="row-actions">
+        <button class="btn btn-primary" id="bank-save">${isNew ? 'Add bank account' : 'Save bank account'}</button>
+        ${isNew ? '' : '<button class="btn btn-secondary" id="bank-new">Add another</button>'}
+      </div>
+      <div class="table-wrap" style="margin-top:16px"><table class="data">
+        <thead><tr>
+          <th>Name</th><th>Type</th><th>Bank</th><th>Last 4</th>
+          ${expert ? '<th>GL</th>' : ''}
+          <th class="num">Opening</th><th></th>
+        </tr></thead>
+        <tbody>${rows || '<tr><td colspan="7" class="muted">No bank accounts yet.</td></tr>'}</tbody>
+      </table></div>
+    </div>`;
   }
 
   function renderInventory(ctx) {
@@ -856,6 +1124,8 @@
       customerId: custId || '',
       customerName: (nameEl && nameEl.value) || (cust && cust.name) || '',
       paymentMethod: (document.getElementById('rcpt-method') || {}).value || 'cash',
+      bankId: (document.getElementById('rcpt-bank') || {}).value || '',
+      checkNumber: (document.getElementById('rcpt-check') || {}).value || '',
       paymentNote: (document.getElementById('rcpt-pay') || {}).value || '',
       vehicle: (document.getElementById('rcpt-vehicle') || {}).value || '',
       ro: (document.getElementById('rcpt-ro') || {}).value || '',
@@ -898,6 +1168,8 @@
       vendorName: (document.getElementById('bill-vend-name') || {}).value || (vend && vend.name) || '',
       ref: (document.getElementById('bill-ref') || {}).value || '',
       paidNow: (document.getElementById('bill-paidnow') || {}).value === 'yes',
+      bankId: (document.getElementById('bill-bank') || {}).value || '',
+      checkNumber: (document.getElementById('bill-check') || {}).value || '',
       lines: lines.filter(Boolean)
     };
   }
@@ -1108,7 +1380,11 @@
         const choice = await ctx.modal({
           title: `Receive payment · ${esc(rec.number)}`,
           body: `<p>Open balance ${money(rec.balance)}</p>
-            <div class="field"><label>Amount</label><input id="modal-input" type="number" step="0.01" value="${esc(rec.balance)}" /></div>`,
+            <div class="field"><label>Amount</label><input id="modal-input" type="number" step="0.01" value="${esc(rec.balance)}" /></div>
+            <div class="field"><label>Bank account</label>
+              ${bankSelectHtml(ctx, rec.bankId, 'modal-bank')}</div>
+            <div class="field"><label>Check No.</label><input id="modal-check" placeholder="—" /></div>
+            <div class="field"><label>Date</label><input id="modal-date" type="date" value="${esc(B().todayIso())}" /></div>`,
           buttons: [
             { id: 'cancel', label: 'Cancel' },
             { id: 'ok', label: 'Post payment', primary: true }
@@ -1118,8 +1394,10 @@
         const res = B().receiveArPayment(ctx.state.books, {
           receiptId: rec.id,
           amount: choice.value,
-          date: B().todayIso(),
-          method: 'cash'
+          date: choice.date || B().todayIso(),
+          method: 'cash',
+          bankId: choice.bankId || '',
+          checkNumber: choice.checkNumber || ''
         });
         if (!res.ok) return ctx.toast(res.error, 'err');
         await commit(ctx, res.books, 'Payment posted.');
@@ -1249,14 +1527,24 @@
         const choice = await ctx.modal({
           title: `Pay bill ${esc(bill.number)}`,
           body: `<p>Open balance ${money(bill.balance)}</p>
-            <div class="field"><label>Amount</label><input id="modal-input" type="number" step="0.01" value="${esc(bill.balance)}" /></div>`,
+            <div class="field"><label>Amount</label><input id="modal-input" type="number" step="0.01" value="${esc(bill.balance)}" /></div>
+            <div class="field"><label>Bank account</label>
+              ${bankSelectHtml(ctx, bill.bankId, 'modal-bank')}</div>
+            <div class="field"><label>Check No.</label><input id="modal-check" value="${esc(bill.checkNumber || '')}" placeholder="—" /></div>
+            <div class="field"><label>Date</label><input id="modal-date" type="date" value="${esc(B().todayIso())}" /></div>`,
           buttons: [
             { id: 'cancel', label: 'Cancel' },
-            { id: 'ok', label: 'Pay from cash', primary: true }
+            { id: 'ok', label: 'Pay from bank', primary: true }
           ]
         });
         if (!choice || choice === 'cancel' || choice.id === 'cancel') return;
-        const res = B().payBill(ctx.state.books, { billId: bill.id, amount: choice.value, date: B().todayIso() });
+        const res = B().payBill(ctx.state.books, {
+          billId: bill.id,
+          amount: choice.value,
+          date: choice.date || B().todayIso(),
+          bankId: choice.bankId || '',
+          checkNumber: choice.checkNumber || ''
+        });
         if (!res.ok) return ctx.toast(res.error, 'err');
         await commit(ctx, res.books, 'Bill payment posted.');
       });
@@ -1294,24 +1582,27 @@
     if (addLine) {
       addLine.addEventListener('click', () => {
         const wrap = document.getElementById('jnl-lines');
-        const div = document.createElement('div');
-        div.className = 'grid grid-4 jnl-edit';
-        div.innerHTML = `<div class="field"><label>Account</label><select class="jnl-acct">${accountOptions(ctx.state.books, '6900')}</select></div>
-          <div class="field"><label>Debit</label><input class="jnl-dr" type="number" step="0.01" /></div>
-          <div class="field"><label>Credit</label><input class="jnl-cr" type="number" step="0.01" /></div>
-          <div class="field"><label>Line memo</label><input class="jnl-lm" /></div>`;
-        wrap.appendChild(div);
+        const holder = document.createElement('div');
+        holder.innerHTML = journalLineEditor(ctx, '6900');
+        wrap.appendChild(holder.firstElementChild);
       });
     }
     const post = document.getElementById('jnl-post');
     if (post) {
       post.addEventListener('click', async () => {
-        const lines = [...document.querySelectorAll('.jnl-edit')].map((el) => ({
-          account: el.querySelector('.jnl-acct').value,
-          debit: Number(el.querySelector('.jnl-dr').value) || 0,
-          credit: Number(el.querySelector('.jnl-cr').value) || 0,
-          memo: el.querySelector('.jnl-lm').value
-        }));
+        const lines = [...document.querySelectorAll('.jnl-edit')].map((el) => {
+          const bankId = el.querySelector('.jnl-bank') ? el.querySelector('.jnl-bank').value : '';
+          const account = bankId && Bank() ? Bank().glForBank(ctx.state.books, bankId) : el.querySelector('.jnl-acct').value;
+          return {
+            account,
+            debit: Number(el.querySelector('.jnl-dr').value) || 0,
+            credit: Number(el.querySelector('.jnl-cr').value) || 0,
+            memo: el.querySelector('.jnl-lm').value,
+            bankId,
+            checkNumber: el.querySelector('.jnl-check') ? el.querySelector('.jnl-check').value : '',
+            payee: el.querySelector('.jnl-payee') ? el.querySelector('.jnl-payee').value : ''
+          };
+        });
         const books = B().clone(ctx.state.books);
         const res = B().postJournal(books, {
           date: document.getElementById('jnl-date').value,
@@ -1321,6 +1612,244 @@
         });
         if (!res.ok) return ctx.toast(res.error, 'err');
         await commit(ctx, books, 'Journal posted.');
+      });
+    }
+    bindReconcile(ctx);
+  }
+
+  function reconById(ctx, id) {
+    return (ctx.state.books.reconciliations || []).find((r) => r.id === id) || null;
+  }
+
+  function showReconReport(ctx, recon, withItemsStart) {
+    const modalRoot = document.getElementById('modal');
+    const card = modalRoot.querySelector('.modal-card');
+    const title = document.getElementById('modal-title');
+    const body = document.getElementById('modal-body');
+    const actions = document.getElementById('modal-actions');
+    card.classList.add('modal-wide');
+    title.textContent = 'Reconciliation report';
+    let withItems = Boolean(withItemsStart);
+    const htmlNow = () =>
+      Bank().reconReportHtml(ctx.state.books, recon, ctx.state.books.company, {
+        withItems,
+        expert: isExpert(ctx)
+      });
+    const paint = () => {
+      body.innerHTML = `<label class="check-inline"><input type="checkbox" id="recon-rep-toggle"${
+        withItems ? ' checked' : ''
+      } /> With reconciled items (full line list). Off shows totals and leftover uncleared only.</label>
+        <iframe class="recon-preview" title="Reconciliation report"></iframe>`;
+      body.querySelector('iframe').srcdoc = htmlNow();
+      body.querySelector('#recon-rep-toggle').addEventListener('change', (e) => {
+        withItems = e.target.checked;
+        paint();
+      });
+    };
+    const close = () => {
+      modalRoot.hidden = true;
+      card.classList.remove('modal-wide');
+      modalRoot.onclick = null;
+    };
+    actions.innerHTML = '';
+    const addBtn = (label, primary, fn) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = primary ? 'btn btn-primary' : 'btn btn-secondary';
+      b.textContent = label;
+      b.addEventListener('click', fn);
+      actions.appendChild(b);
+    };
+    addBtn('Print', false, async () => {
+      await ctx.api.printHtml(htmlNow());
+    });
+    addBtn('Save PDF', true, async () => {
+      const fileName = `recon-${recon.statementDate || 'statement'}.pdf`;
+      const res = await ctx.api.saveReportPdf({ html: htmlNow(), fileName, subdir: 'books' });
+      if (res && res.ok) ctx.toast('Recon PDF saved in Reports.', 'ok');
+      else ctx.toast((res && res.message) || 'Could not save PDF.', 'err');
+    });
+    addBtn('Close', false, close);
+    modalRoot.onclick = (ev) => {
+      if (ev.target.hasAttribute('data-modal-cancel')) close();
+    };
+    modalRoot.hidden = false;
+    paint();
+  }
+
+  async function persistReconFields(ctx) {
+    const reconId = ui(ctx.state).reconId;
+    if (!reconId) return;
+    const dateEl = document.getElementById('recon-date');
+    const endEl = document.getElementById('recon-end');
+    if (!dateEl || !endEl) return;
+    const res = Bank().updateRecon(ctx.state.books, reconId, {
+      statementDate: dateEl.value,
+      statementBalance: endEl.value
+    });
+    if (!res.ok) return;
+    ctx.state.books = res.books;
+    await ctx.persistBooks();
+  }
+
+  function bindReconcile(ctx) {
+    if (!Bank()) return;
+    const bankSel = document.getElementById('recon-bank');
+    if (bankSel) {
+      bankSel.addEventListener('change', () => {
+        ui(ctx.state).reconBankId = bankSel.value;
+        ui(ctx.state).reconId = '';
+        ctx.renderAll();
+      });
+    }
+    const nextBtn = document.getElementById('recon-next');
+    if (nextBtn) {
+      nextBtn.addEventListener('click', () => {
+        ui(ctx.state).reconId = '';
+        ctx.renderAll();
+      });
+    }
+    const start = document.getElementById('recon-start');
+    if (start) {
+      start.addEventListener('click', async () => {
+        const bankId = (document.getElementById('recon-bank') || {}).value || currentBankId(ctx);
+        const date = (document.getElementById('recon-new-date') || {}).value || B().todayIso();
+        const res = Bank().openRecon(ctx.state.books, bankId, date);
+        if (!res.ok) return ctx.toast(res.error, 'err');
+        ui(ctx.state).reconBankId = bankId;
+        ui(ctx.state).reconId = res.recon.id;
+        await commit(ctx, res.books);
+      });
+    }
+    const dateEl = document.getElementById('recon-date');
+    const endEl = document.getElementById('recon-end');
+    if (dateEl) dateEl.addEventListener('change', async () => persistReconFields(ctx).then(() => ctx.renderAll()));
+    if (endEl) endEl.addEventListener('change', async () => persistReconFields(ctx).then(() => ctx.renderAll()));
+    document.querySelectorAll('[data-recon-clear]').forEach((box) => {
+      box.addEventListener('change', async () => {
+        await persistReconFields(ctx);
+        const res = Bank().toggleCleared(ctx.state.books, ui(ctx.state).reconId, box.getAttribute('data-recon-clear'));
+        if (!res.ok) return ctx.toast(res.error, 'err');
+        await commit(ctx, res.books);
+      });
+    });
+    const finish = async (allowDifference) => {
+      await persistReconFields(ctx);
+      const res = Bank().finishRecon(ctx.state.books, ui(ctx.state).reconId, {
+        expert: isExpert(ctx),
+        allowDifference: Boolean(allowDifference),
+        company: ctx.state.books.company
+      });
+      if (!res.ok) return ctx.toast(res.error, 'err');
+      await commit(ctx, res.books, 'Reconciliation finished.');
+      showReconReport(ctx, res.recon, isExpert(ctx));
+    };
+    const fin = document.getElementById('recon-finish');
+    if (fin) fin.addEventListener('click', () => finish(false));
+    const finDiff = document.getElementById('recon-finish-diff');
+    if (finDiff) finDiff.addEventListener('click', () => finish(true));
+    const attach = document.getElementById('recon-attach');
+    if (attach) {
+      attach.addEventListener('click', async () => {
+        const reconId = ui(ctx.state).reconId;
+        if (!reconId || !ctx.api.attachReconDocs) return;
+        await persistReconFields(ctx);
+        const picked = await ctx.api.attachReconDocs(reconId);
+        if (!picked || picked.canceled || !picked.ok) {
+          if (picked && picked.message) ctx.toast(picked.message, 'err');
+          return;
+        }
+        let books = ctx.state.books;
+        for (const file of picked.files || []) {
+          const added = Bank().addAttachmentMeta(books, reconId, file);
+          if (!added.ok) return ctx.toast(added.error, 'err');
+          books = added.books;
+        }
+        await commit(ctx, books, 'Attachment saved.');
+      });
+    }
+    document.querySelectorAll('[data-recon-open]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const reconId = ui(ctx.state).reconId || btn.closest('[data-recon-id]');
+        const id = ui(ctx.state).reconId;
+        if (!id || !ctx.api.openReconDoc) return;
+        const res = await ctx.api.openReconDoc({ reconId: id, storedName: btn.getAttribute('data-recon-open') });
+        if (res && res.ok === false) ctx.toast(res.message || 'Could not open file.', 'err');
+      });
+    });
+    document.querySelectorAll('[data-recon-delatt]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const id = ui(ctx.state).reconId;
+        if (!id) return;
+        const storedName = btn.getAttribute('data-recon-delatt');
+        if (ctx.api.removeReconDoc) await ctx.api.removeReconDoc({ reconId: id, storedName });
+        const res = Bank().removeAttachmentMeta(ctx.state.books, id, storedName);
+        if (!res.ok) return ctx.toast(res.error, 'err');
+        await commit(ctx, res.books, 'Attachment removed.');
+      });
+    });
+    document.querySelectorAll('[data-recon-view]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const recon = reconById(ctx, btn.getAttribute('data-recon-view'));
+        if (!recon) return;
+        ui(ctx.state).reconId = recon.id;
+        ui(ctx.state).reconBankId = recon.bankId;
+        ctx.renderAll();
+      });
+    });
+    document.querySelectorAll('[data-recon-report]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const recon = reconById(ctx, btn.getAttribute('data-recon-report'));
+        if (recon) showReconReport(ctx, recon, isExpert(ctx));
+      });
+    });
+    document.querySelectorAll('[data-recon-reopen]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const res = Bank().reopenRecon(ctx.state.books, btn.getAttribute('data-recon-reopen'));
+        if (!res.ok) return ctx.toast(res.error, 'err');
+        ui(ctx.state).reconId = res.recon.id;
+        ui(ctx.state).reconBankId = res.recon.bankId;
+        await commit(ctx, res.books, 'Reconciliation reopened.');
+      });
+    });
+  }
+
+  function bindBankingSettings(ctx) {
+    if (!Bank() || !ctx.state.books) return;
+    document.querySelectorAll('[data-edit-bank]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        ui(ctx.state).bankEditId = btn.getAttribute('data-edit-bank');
+        ctx.renderAll();
+      });
+    });
+    const neu = document.getElementById('bank-new');
+    if (neu) {
+      neu.addEventListener('click', () => {
+        ui(ctx.state).bankEditId = '';
+        ctx.renderAll();
+      });
+    }
+    const save = document.getElementById('bank-save');
+    if (save) {
+      save.addEventListener('click', async () => {
+        const last4 = (document.getElementById('bank-last4') || {}).value || '';
+        if (String(last4).replace(/\D/g, '').length > 4) {
+          return ctx.toast('Last 4 digits only — never a full account number.', 'err');
+        }
+        const row = {
+          id: ui(ctx.state).bankEditId || B().uid('bank'),
+          name: (document.getElementById('bank-name') || {}).value,
+          type: (document.getElementById('bank-type') || {}).value,
+          bankName: (document.getElementById('bank-inst') || {}).value,
+          last4,
+          openingBalance: (document.getElementById('bank-open') || {}).value,
+          openingDate: (document.getElementById('bank-opendate') || {}).value,
+          glAccount: (document.getElementById('bank-gl') || {}).value
+        };
+        const res = Bank().upsertBank(ctx.state.books, row);
+        if (!res.ok) return ctx.toast(res.error, 'err');
+        ui(ctx.state).bankEditId = '';
+        await commit(ctx, res.books, 'Bank account saved.');
       });
     }
   }
@@ -1453,6 +1982,8 @@
     bind,
     renderBooksReports,
     bindBooksReports,
+    renderBankingSettings,
+    bindBankingSettings,
     ui
   };
 })(window);

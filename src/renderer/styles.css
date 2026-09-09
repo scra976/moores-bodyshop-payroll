@@ -778,6 +778,43 @@ table.data select {
   box-shadow: 0 24px 48px rgba(15, 28, 51, 0.22);
 }
 
+.modal-card.modal-wide {
+  width: min(860px, calc(100% - 32px));
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+}
+
+.check-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+
+.recon-preview {
+  width: 100%;
+  height: 420px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.recon-atts {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+}
+
+.recon-att {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
 .modal-card h3 { margin: 0 0 8px; font-size: 18px; font-weight: 600; }
 
 .modal-body { color: #3d4452; font-size: 14px; }

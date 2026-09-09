@@ -36,6 +36,15 @@ app.whenReady().then(async () => {
   const again = await store.loadEmployees();
   if (JSON.stringify(again.employees) !== before) throw new Error('employee save round-trip changed data');
 
+  await store.saveBooks(books);
+  const banksFile = store.banksPath();
+  if (!fs.existsSync(banksFile)) throw new Error('banks.json missing under books');
+  const banksJson = JSON.parse(fs.readFileSync(banksFile, 'utf8'));
+  if (!Array.isArray(banksJson.banks) || !banksJson.banks.length) throw new Error('banks.json has no accounts');
+  if (JSON.stringify(banksJson).includes('ssn')) throw new Error('banks.json leaked payroll');
+  const afterPay = await store.loadEmployees();
+  if (JSON.stringify(afterPay.employees) !== before) throw new Error('saving books must not change employees');
+
   const live = store.employeesPath();
   if (!fs.existsSync(live)) throw new Error('encrypted file missing');
   const backups = fs.readdirSync(store.backupsDir()).filter((f) => f.endsWith('.json.enc'));

@@ -206,6 +206,8 @@
       payments: [],
       billPayments: [],
       payrollPosts: [],
+      banks: [],
+      reconciliations: [],
       counters: { journal: 0, receipt: 0, bill: 0, job: 0, customer: 0, vendor: 0 }
     };
   }
@@ -321,9 +323,26 @@
     books.payments = Array.isArray(src.payments) ? src.payments : [];
     books.billPayments = Array.isArray(src.billPayments) ? src.billPayments : [];
     books.payrollPosts = Array.isArray(src.payrollPosts) ? src.payrollPosts : [];
+    books.banks = Array.isArray(src.banks) ? src.banks : [];
+    books.reconciliations = Array.isArray(src.reconciliations) ? src.reconciliations : [];
     books.counters = { ...base.counters, ...(src.counters || {}) };
     books.version = 2;
+    ensureLineIds(books);
     return books;
+  }
+
+  function ensureLineIds(books) {
+    for (const j of books.journal || []) {
+      (j.lines || []).forEach((ln, i) => {
+        if (!ln.lineId) ln.lineId = `${j.id}:${i}`;
+      });
+    }
+  }
+
+  function resolveCashGl(books, bankId) {
+    if (!bankId) return '1000';
+    const b = (books.banks || []).find((x) => String(x.id) === String(bankId));
+    return (b && b.glAccount) || '1000';
   }
 
   function receiptTotals(receipt) {
@@ -365,7 +384,12 @@
         account: String(ln.account),
         debit: d,
         credit: c,
-        memo: String(ln.memo || '')
+        memo: String(ln.memo || ''),
+        lineId: String(ln.lineId || uid('ln')),
+        bankId: String(ln.bankId || ''),
+        checkNumber: String(ln.checkNumber || ''),
+        payee: String(ln.payee || ''),
+        clearedReconId: String(ln.clearedReconId || '')
       });
     }
     if (!clean.length) return { ok: false, error: 'Journal has no amounts.' };
@@ -588,8 +612,19 @@
       issues.push(issued);
     }
     const cogs = round2(issues.reduce((s, x) => s + x.cost, 0));
-    const arCash = cashOrAr(receipt.paymentMethod);
-    const lines = [{ account: arCash, debit: totals.total, credit: 0, memo: receipt.number }];
+    const onAcct = isOnAccount(receipt.paymentMethod);
+    const arCash = onAcct ? '1100' : resolveCashGl(books, receipt.bankId);
+    const lines = [
+      {
+        account: arCash,
+        debit: totals.total,
+        credit: 0,
+        memo: receipt.number,
+        bankId: onAcct ? '' : String(receipt.bankId || ''),
+        payee: receipt.customerName || '',
+        checkNumber: onAcct ? '' : String(receipt.checkNumber || '')
+      }
+    ];
     if (totals.parts) lines.push({ account: '4100', debit: 0, credit: totals.parts, memo: 'Parts' });
     if (totals.mech) lines.push({ account: '4000', debit: 0, credit: totals.mech, memo: 'Mechanical labor' });
     if (totals.body) lines.push({ account: '4010', debit: 0, credit: totals.body, memo: 'Body labor' });
@@ -686,7 +721,7 @@
     return { ok: true, books, receipt };
   }
 
-  function receiveArPayment(books, { receiptId, amount, date, method, memo }) {
+  function receiveArPayment(books, { receiptId, amount, date, method, memo, bankId, checkNumber }) {
     books = clone(books);
     const receipt = books.receipts.find((r) => r.id === receiptId);
     if (!receipt) return { ok: false, error: 'Invoice not found.' };
@@ -694,13 +729,22 @@
     const amt = round2(amount);
     if (amt <= 0) return { ok: false, error: 'Payment must be greater than zero.' };
     if (amt - receipt.balance > 0.005) return { ok: false, error: 'Payment cannot exceed the open balance.' };
+    const gl = resolveCashGl(books, bankId);
     const posted = postJournal(books, {
       date: date || todayIso(),
       memo: memo || `Payment ${receipt.number}`,
       source: 'ar-payment',
       sourceId: receipt.id,
       lines: [
-        { account: '1000', debit: amt, credit: 0, memo: method || 'Payment' },
+        {
+          account: gl,
+          debit: amt,
+          credit: 0,
+          memo: method || 'Payment',
+          bankId: bankId || '',
+          checkNumber: checkNumber || '',
+          payee: receipt.customerName || ''
+        },
         { account: '1100', debit: 0, credit: amt, memo: receipt.number }
       ]
     });
@@ -715,6 +759,8 @@
       amount: amt,
       method: method || 'cash',
       memo: memo || '',
+      bankId: bankId || '',
+      checkNumber: checkNumber || '',
       journalId: posted.entry.id
     });
     return { ok: true, books, receipt, entry: posted.entry };
@@ -753,8 +799,16 @@
       }
     }
     if (!total) return { ok: false, error: 'Bill has no amounts.' };
-    const creditAcct = bill.paidNow ? '1000' : '2000';
-    lines.push({ account: creditAcct, debit: 0, credit: total, memo: bill.vendorName || bill.number });
+    const creditAcct = bill.paidNow ? resolveCashGl(books, bill.bankId) : '2000';
+    lines.push({
+      account: creditAcct,
+      debit: 0,
+      credit: total,
+      memo: bill.vendorName || bill.number,
+      bankId: bill.paidNow ? String(bill.bankId || '') : '',
+      payee: bill.vendorName || '',
+      checkNumber: bill.paidNow ? String(bill.checkNumber || '') : ''
+    });
     const posted = postJournal(books, {
       date: bill.date,
       memo: `Bill ${bill.number}${bill.vendorName ? ' · ' + bill.vendorName : ''}`,
@@ -787,7 +841,7 @@
     return { ok: true, books, bill: idx >= 0 ? books.bills[idx] : row };
   }
 
-  function payBill(books, { billId, amount, date, memo }) {
+  function payBill(books, { billId, amount, date, memo, bankId, checkNumber }) {
     books = clone(books);
     const bill = books.bills.find((b) => b.id === billId);
     if (!bill) return { ok: false, error: 'Bill not found.' };
@@ -795,6 +849,7 @@
     const amt = round2(amount);
     if (amt <= 0) return { ok: false, error: 'Payment must be greater than zero.' };
     if (amt - bill.balance > 0.005) return { ok: false, error: 'Payment cannot exceed the open balance.' };
+    const gl = resolveCashGl(books, bankId);
     const posted = postJournal(books, {
       date: date || todayIso(),
       memo: memo || `Pay bill ${bill.number}`,
@@ -802,7 +857,15 @@
       sourceId: bill.id,
       lines: [
         { account: '2000', debit: amt, credit: 0, memo: bill.number },
-        { account: '1000', debit: 0, credit: amt, memo: bill.vendorName || 'Bill payment' }
+        {
+          account: gl,
+          debit: 0,
+          credit: amt,
+          memo: bill.vendorName || 'Bill payment',
+          bankId: bankId || '',
+          checkNumber: checkNumber || '',
+          payee: bill.vendorName || ''
+        }
       ]
     });
     if (!posted.ok) return posted;
@@ -815,6 +878,8 @@
       date: date || todayIso(),
       amount: amt,
       memo: memo || '',
+      bankId: bankId || '',
+      checkNumber: checkNumber || '',
       journalId: posted.entry.id
     });
     return { ok: true, books, bill, entry: posted.entry };
@@ -900,7 +965,17 @@
       { account: '6000', debit: gross, credit: 0, memo: name },
       { account: '6100', debit: erFica, credit: 0, memo: 'Employer FICA' }
     ];
-    if (net) lines.push({ account: '1000', debit: 0, credit: net, memo: 'Net pay' });
+    if (net) {
+      lines.push({
+        account: resolveCashGl(books, payload.bankId),
+        debit: 0,
+        credit: net,
+        memo: 'Net pay',
+        bankId: payload.bankId || '',
+        checkNumber: payload.checkNumber || '',
+        payee: name
+      });
+    }
     if (federal) lines.push({ account: '2210', debit: 0, credit: federal, memo: 'FIT' });
     if (ss) lines.push({ account: '2220', debit: 0, credit: ss, memo: 'Employee SS' });
     if (medicare) lines.push({ account: '2230', debit: 0, credit: medicare, memo: 'Employee Medicare' });
@@ -1338,6 +1413,8 @@
     sortAccounts,
     cashOrAr,
     isOnAccount,
+    resolveCashGl,
+    ensureLineIds,
     receiptInnerHtml,
     receiptDocumentHtml,
     RECEIPT_CSS,

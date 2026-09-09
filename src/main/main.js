@@ -317,6 +317,47 @@ function registerIpc() {
     }
   });
 
+  ipcMain.handle('recon:attach', async (_event, reconId) => {
+    const win = BrowserWindow.getFocusedWindow() || mainWindow;
+    if (!reconId) return { ok: false, message: 'Reconciliation is missing.' };
+    const choice = await dialog.showOpenDialog(win, {
+      title: 'Attach statement or document',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: 'PDF, JPG, PNG', extensions: ['pdf', 'jpg', 'jpeg', 'png'] }
+      ]
+    });
+    if (choice.canceled || !choice.filePaths || !choice.filePaths.length) {
+      return { ok: false, canceled: true };
+    }
+    try {
+      const files = await store.attachReconDocs(reconId, choice.filePaths);
+      return { ok: true, files };
+    } catch (err) {
+      return { ok: false, message: err && err.message ? String(err.message) : 'Could not attach file.' };
+    }
+  });
+
+  ipcMain.handle('recon:openDoc', async (_event, payload) => {
+    try {
+      const dest = await store.openReconDoc(payload && payload.reconId, payload && payload.storedName);
+      const result = await shell.openPath(dest);
+      if (result) return { ok: false, message: result };
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, message: err && err.message ? String(err.message) : 'Could not open attachment.' };
+    }
+  });
+
+  ipcMain.handle('recon:removeDoc', async (_event, payload) => {
+    try {
+      await store.removeReconDoc(payload && payload.reconId, payload && payload.storedName);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, message: err && err.message ? String(err.message) : 'Could not remove attachment.' };
+    }
+  });
+
   ipcMain.handle('print:html', async (_event, html) => {
     if (!html) return { ok: false, message: 'Missing print content.' };
     const tmp = path.join(os.tmpdir(), `mbsp-print-${Date.now()}-${process.pid}.html`);

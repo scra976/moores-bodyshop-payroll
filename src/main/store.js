@@ -6,6 +6,7 @@ const path = require('path');
 const { app, safeStorage } = require('electron');
 
 const booksEngine = require('../renderer/books');
+const bankingEngine = require('../renderer/banking');
 
 const MAGIC = Buffer.from('MBSPAY01');
 const FLAG_ENCRYPTED = 0x01;
@@ -42,6 +43,14 @@ function shopBackupsDir() {
 
 function booksPath() {
   return path.join(booksDir(), 'books.json');
+}
+
+function banksPath() {
+  return path.join(booksDir(), 'banks.json');
+}
+
+function reconcileDocsRoot() {
+  return path.join(booksDir(), 'reconcile-docs');
 }
 
 function receiptsIndexPath() {
@@ -106,6 +115,7 @@ async function ensureDirs() {
   await fsp.mkdir(booksDir(), { recursive: true });
   await fsp.mkdir(receiptsDir(), { recursive: true });
   await fsp.mkdir(shopBackupsDir(), { recursive: true });
+  await fsp.mkdir(reconcileDocsRoot(), { recursive: true });
 }
 
 function wrapPayload(jsonUtf8Buffer) {
@@ -543,6 +553,60 @@ async function writeShopBackup(books) {
   await Promise.all(extra.map((n) => fsp.unlink(path.join(shopBackupsDir(), n)).catch(() => {})));
 }
 
+function safeReconId(id) {
+  const s = String(id || '');
+  if (!/^[a-zA-Z0-9._-]+$/.test(s)) {
+    throw new Error('Invalid reconciliation id.');
+  }
+  return s;
+}
+
+function safeStoredName(name) {
+  const base = path.basename(String(name || ''));
+  if (!base || base === '.' || base === '..') throw new Error('Invalid file name.');
+  return base.replace(/[^\w.\- ()]/g, '_').slice(0, 120);
+}
+
+function reconDocDir(reconId) {
+  return path.join(reconcileDocsRoot(), safeReconId(reconId));
+}
+
+function mimeForExt(ext) {
+  const e = String(ext || '').toLowerCase();
+  if (e === '.pdf') return 'application/pdf';
+  if (e === '.png') return 'image/png';
+  if (e === '.jpg' || e === '.jpeg') return 'image/jpeg';
+  return '';
+}
+
+async function overlayBanksFile(books) {
+  try {
+    const text = await fsp.readFile(banksPath(), 'utf8');
+    const parsed = JSON.parse(text);
+    if (parsed && Array.isArray(parsed.banks) && parsed.banks.length) {
+      books.banks = parsed.banks;
+    }
+    if (parsed && Array.isArray(parsed.reconciliations)) {
+      books.reconciliations = parsed.reconciliations;
+    }
+  } catch {
+    /* banks.json is created on first save */
+  }
+  bankingEngine.ensureBanks(books);
+  return books;
+}
+
+async function saveBanksFile(books) {
+  bankingEngine.ensureBanks(books);
+  const payload = {
+    version: 1,
+    banks: books.banks || [],
+    reconciliations: books.reconciliations || []
+  };
+  const json = Buffer.from(`${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  await atomicWrite(banksPath(), json);
+}
+
 async function loadBooks() {
   await ensureDirs();
   const live = booksPath();
@@ -550,13 +614,16 @@ async function loadBooks() {
     await fsp.access(live, fs.constants.F_OK);
   } catch {
     const seeded = booksEngine.seedBooks();
+    bankingEngine.ensureBanks(seeded);
     await saveBooks(seeded);
     return seeded;
   }
   try {
     const text = await fsp.readFile(live, 'utf8');
     const parsed = JSON.parse(text);
-    return booksEngine.normalize(parsed);
+    const books = booksEngine.normalize(parsed);
+    await overlayBanksFile(books);
+    return books;
   } catch (err) {
     const message = err && err.message ? String(err.message) : 'Could not read books.';
     throw new Error(message);
@@ -565,12 +632,65 @@ async function loadBooks() {
 
 async function saveBooks(data) {
   const books = booksEngine.normalize(data);
+  bankingEngine.ensureBanks(books);
   await ensureDirs();
   const json = Buffer.from(`${JSON.stringify(books, null, 2)}\n`, 'utf8');
   await atomicWrite(booksPath(), json);
+  await saveBanksFile(books);
   const receiptsJson = Buffer.from(`${JSON.stringify({ version: 2, receipts: books.receipts }, null, 2)}\n`, 'utf8');
   await atomicWrite(receiptsIndexPath(), receiptsJson);
   await writeShopBackup(books);
+  return { ok: true };
+}
+
+async function attachReconDocs(reconId, filePaths) {
+  await ensureDirs();
+  const destDir = reconDocDir(reconId);
+  await fsp.mkdir(destDir, { recursive: true });
+  const allowed = new Set(['.pdf', '.jpg', '.jpeg', '.png']);
+  const files = [];
+  let i = 0;
+  for (const src of filePaths || []) {
+    const ext = path.extname(String(src || '')).toLowerCase();
+    if (!allowed.has(ext)) {
+      throw new Error('Attach PDF, JPG, or PNG only.');
+    }
+    const original = safeStoredName(src);
+    i += 1;
+    const storedName = `${Date.now().toString(36)}-${i}-${original}`;
+    const dest = path.join(destDir, storedName);
+    await fsp.copyFile(String(src), dest);
+    files.push({
+      id: `att-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      name: path.basename(String(src)),
+      storedName,
+      mime: mimeForExt(ext),
+      addedAt: new Date().toISOString()
+    });
+  }
+  return files;
+}
+
+function reconDocPath(reconId, storedName) {
+  const destDir = reconDocDir(reconId);
+  const name = safeStoredName(storedName);
+  const dest = path.join(destDir, name);
+  const resolved = path.resolve(dest);
+  if (!resolved.startsWith(path.resolve(destDir))) {
+    throw new Error('Invalid attachment path.');
+  }
+  return resolved;
+}
+
+async function openReconDoc(reconId, storedName) {
+  const dest = reconDocPath(reconId, storedName);
+  await fsp.access(dest, fs.constants.F_OK);
+  return dest;
+}
+
+async function removeReconDoc(reconId, storedName) {
+  const dest = reconDocPath(reconId, storedName);
+  await fsp.unlink(dest).catch(() => {});
   return { ok: true };
 }
 
@@ -599,6 +719,11 @@ module.exports = {
   receiptsDir,
   shopBackupsDir,
   booksPath,
+  banksPath,
+  reconcileDocsRoot,
+  attachReconDocs,
+  openReconDoc,
+  removeReconDoc,
   employeesPath,
   settingsPath,
   backupsDir,

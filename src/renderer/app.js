@@ -52,6 +52,7 @@ const state = {
     holidayHours: '',
     ptoHours: '',
     checkNumber: '',
+    bankId: '',
     loadedKey: ''
   },
   update: {
@@ -346,8 +347,18 @@ function modal({ title, body, buttons }) {
       if (settled) return;
       settled = true;
       root.hidden = true;
+      const card = root.querySelector('.modal-card');
+      if (card) card.classList.remove('modal-wide');
       root.removeEventListener('click', onBackdrop);
-      resolve(value !== undefined ? { id, value } : id);
+      const extra = {};
+      const bank = document.getElementById('modal-bank');
+      if (bank) extra.bankId = bank.value;
+      const chk = document.getElementById('modal-check');
+      if (chk) extra.checkNumber = chk.value;
+      const dt = document.getElementById('modal-date');
+      if (dt) extra.date = dt.value;
+      if (value !== undefined || Object.keys(extra).length) resolve({ id, value, ...extra });
+      else resolve(id);
     };
     (buttons || [{ id: 'ok', label: 'OK', primary: true }]).forEach((btn) => {
       const b = document.createElement('button');
@@ -1508,6 +1519,7 @@ function loadPunchesForWeek() {
       });
     }
     state.time.checkNumber = existing.checkNumber || '';
+    state.time.bankId = existing.bankId || state.time.bankId || '';
   } else {
     const packed = ensureWeekRows(period, []);
     state.time.punches = packed.rows;
@@ -1515,6 +1527,7 @@ function loadPunchesForWeek() {
     state.time.holidayHours = '';
     state.time.ptoHours = '';
     state.time.checkNumber = '';
+    state.time.bankId = state.time.bankId || '';
   }
   state.time.loadedKey = `${state.time.employeeId || ''}|${period.periodEnd}`;
 }
@@ -1640,6 +1653,18 @@ function renderTimeclocks() {
           <label>Check No.</label>
           <input id="tc-check" value="${esc(state.time.checkNumber || '')}" placeholder="—" />
         </div>
+        <div class="field" style="min-width:220px">
+          <label>Net pay bank</label>
+          <select id="tc-bank">${
+            window.MooresBanking && state.books
+              ? window.MooresBanking.bankOptionsHtml(
+                  state.books,
+                  state.time.bankId || window.MooresBanking.defaultBankId(state.books),
+                  isExpert()
+                )
+              : '<option value="">Cash</option>'
+          }</select>
+        </div>
       </div>
       <p class="hint">Period ${esc(period.periodStart)} (Wed) through ${esc(period.periodEnd)} (Tue). Paid ${esc(period.payday)}.</p>
       <div class="mode-toggle" role="tablist">
@@ -1704,6 +1729,12 @@ function bindTimeclocks() {
   if (checkEl) {
     checkEl.addEventListener('input', () => {
       state.time.checkNumber = checkEl.value;
+    });
+  }
+  const bankEl = document.getElementById('tc-bank');
+  if (bankEl) {
+    bankEl.addEventListener('change', () => {
+      state.time.bankId = bankEl.value;
     });
   }
   document.querySelectorAll('[data-time-mode]').forEach((btn) => {
@@ -1844,6 +1875,7 @@ function bindTimeclocks() {
         loans: calc.pay.loans,
         deductions: JSON.parse(JSON.stringify(calc.pay.deductions || [])),
         checkNumber: String(state.time.checkNumber || '').trim(),
+        bankId: String(state.time.bankId || (window.MooresBanking && window.MooresBanking.defaultBankId(state.books)) || ''),
         net: calc.pay.net,
         punches: JSON.parse(JSON.stringify(state.time.punches.concat(extraPunches)))
       };
@@ -1868,7 +1900,9 @@ function bindTimeclocks() {
             childSupport: record.childSupport,
             garnishments: record.garnishments,
             loans: calc.pay.loans,
-            pretax: record.pretax
+            pretax: record.pretax,
+            bankId: record.bankId,
+            checkNumber: record.checkNumber
           });
           if (posted.ok) {
             state.books = posted.books;
@@ -2547,6 +2581,8 @@ function renderSettings() {
       </div>
     </div>
 
+    ${window.MooresBooksUi && window.MooresBooksUi.renderBankingSettings ? window.MooresBooksUi.renderBankingSettings(booksCtx()) : ''}
+
     ${renderQbImportCard()}
 
     <div class="card">
@@ -2854,6 +2890,9 @@ function bindSettings() {
     });
   }
 
+  if (window.MooresBooksUi && window.MooresBooksUi.bindBankingSettings) {
+    window.MooresBooksUi.bindBankingSettings(booksCtx());
+  }
   bindQbImport();
 
   const exportEnc = document.getElementById('btn-export-enc');
