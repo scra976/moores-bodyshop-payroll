@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('mooresPayroll', {
   printHtml: (html) => ipcRenderer.invoke('print:html', html),
   pickImportFile: () => ipcRenderer.invoke('import:pick'),
   parseImportFile: (filePath) => ipcRenderer.invoke('import:parse', filePath),
+  writeImportLog: (text) => ipcRenderer.invoke('import:writeLog', text),
   onUpdateEvent: (callback) => {
     const listener = (_event, payload) => {
       if (typeof callback === 'function') callback(payload);

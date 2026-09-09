@@ -3,6 +3,138 @@
 const zlib = require('zlib');
 const path = require('path');
 
+const HEADER_HINTS = [
+  'name',
+  'customer',
+  'vendor',
+  'company',
+  'email',
+  'phone',
+  'address',
+  'balance',
+  'first',
+  'last',
+  'ssn',
+  'hire',
+  'item',
+  'qty',
+  'quantity',
+  'cost',
+  'price',
+  'employee',
+  'date',
+  'check',
+  'hours',
+  'gross',
+  'fit',
+  'medicare',
+  'net',
+  'type',
+  'num',
+  'amount',
+  'memo',
+  'account',
+  'display',
+  'invoice',
+  'bill'
+];
+
+function normKey(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/['’]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function isBrandText(s) {
+  const n = normKey(s);
+  if (!n) return false;
+  if (n === 'moores' || n === 'moore' || n === 'moores body shop' || n === 'moores bodyshop') return true;
+  return /\bmoores?\b/.test(n) && /\b(body|shop|mechanical|payroll|books)\b/.test(n);
+}
+
+function isBrandRow(cells) {
+  const filled = (cells || []).map((c) => String(c || '').trim()).filter(Boolean);
+  if (!filled.length) return false;
+  if (filled.length <= 2 && filled.every(isBrandText)) return true;
+  return filled.length === 1 && isBrandText(filled[0]);
+}
+
+function headerScore(cells) {
+  if (isBrandRow(cells)) return -100;
+  let score = 0;
+  const seen = new Set();
+  for (const c of cells || []) {
+    const n = normKey(c);
+    if (!n || n.length > 48 || isBrandText(n)) continue;
+    for (const h of HEADER_HINTS) {
+      const words = n.split(' ');
+      if (n === h || words.includes(h)) {
+        if (!seen.has(h)) {
+          score += 2;
+          seen.add(h);
+        }
+      }
+    }
+  }
+  return score;
+}
+
+function uniquifyHeaders(cells) {
+  const used = new Map();
+  return (cells || []).map((raw, i) => {
+    let t = String(raw || '').trim();
+    if (!t || isBrandText(t)) t = `Column ${i + 1}`;
+    const base = t;
+    let n = used.get(base) || 0;
+    n += 1;
+    used.set(base, n);
+    return n === 1 ? base : `${base} (${n})`;
+  });
+}
+
+function detectRegister(headers) {
+  const keys = (headers || []).map(normKey);
+  const has = (tok) => keys.some((k) => k === tok || k.split(' ').includes(tok));
+  const hits = [has('type'), has('date'), has('num') || has('number') || has('check'), has('name'), has('amount')].filter(
+    Boolean
+  ).length;
+  return hits >= 4;
+}
+
+function tableFromGrid(grid) {
+  const src = (grid || []).filter((r) => (r || []).some((c) => String(c || '').trim() !== ''));
+  if (!src.length) return { headers: [], rows: [], headerRowIndex: 0, looksLikeRegister: false };
+  const scan = Math.min(src.length, 40);
+  let best = 0;
+  let bestScore = -999;
+  for (let i = 0; i < scan; i++) {
+    const s = headerScore(src[i] || []);
+    if (s > bestScore) {
+      bestScore = s;
+      best = i;
+    }
+  }
+  if (bestScore < 2) {
+    while (best < src.length && isBrandRow(src[best])) best += 1;
+  }
+  const headers = uniquifyHeaders(src[best] || []);
+  const rows = src.slice(best + 1).map((r) => {
+    const obj = {};
+    headers.forEach((h, i) => {
+      obj[h] = r[i] != null ? String(r[i]).trim() : '';
+    });
+    return obj;
+  });
+  return {
+    headers,
+    rows,
+    headerRowIndex: best,
+    looksLikeRegister: detectRegister(headers)
+  };
+}
+
 function parseCsv(text) {
   const src = String(text || '').replace(/^\uFEFF/, '');
   const rows = [];
@@ -34,16 +166,7 @@ function parseCsv(text) {
     row.push(cell);
     if (row.some((c) => String(c).trim() !== '')) rows.push(row);
   }
-  if (!rows.length) return { headers: [], rows: [] };
-  const headers = rows[0].map((h, i) => String(h || '').trim() || `Column ${i + 1}`);
-  const body = rows.slice(1).map((r) => {
-    const obj = {};
-    headers.forEach((h, i) => {
-      obj[h] = r[i] != null ? String(r[i]).trim() : '';
-    });
-    return obj;
-  });
-  return { headers, rows: body };
+  return tableFromGrid(rows);
 }
 
 function readZipEntries(buf) {
@@ -70,14 +193,6 @@ function readZipEntries(buf) {
     if (!uncompSize && !compSize) break;
   }
   return entries;
-}
-
-function xmlTexts(xml, tag) {
-  const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, 'gi');
-  const out = [];
-  let m;
-  while ((m = re.exec(xml))) out.push(m[1]);
-  return out;
 }
 
 function decodeXml(s) {
@@ -148,16 +263,7 @@ function parseXlsx(buf) {
   const ssXml = (entries['xl/sharedStrings.xml'] || Buffer.alloc(0)).toString('utf8');
   const strings = parseSharedStrings(ssXml);
   const grid = parseSheet(entries[sheetName].toString('utf8'), strings);
-  if (!grid.length) return { headers: [], rows: [] };
-  const headers = grid[0].map((h, i) => String(h || '').trim() || `Column ${i + 1}`);
-  const rows = grid.slice(1).map((r) => {
-    const obj = {};
-    headers.forEach((h, i) => {
-      obj[h] = r[i] != null ? String(r[i]).trim() : '';
-    });
-    return obj;
-  });
-  return { headers, rows };
+  return tableFromGrid(grid);
 }
 
 function parseTableBuffer(filePath, buffer) {
@@ -165,22 +271,27 @@ function parseTableBuffer(filePath, buffer) {
   if (ext === '.xls') {
     return {
       ok: false,
-      message: 'QuickBooks .xls (old Excel) cannot be opened here. In QuickBooks use File → Export → CSV, or save the Excel file as .xlsx or .csv.'
+      message:
+        'QuickBooks .xls (old Excel) cannot be opened here. In QuickBooks use File → Export → CSV, or save the Excel file as .xlsx or .csv.'
     };
   }
   if (ext === '.qbw' || ext === '.qbb' || ext === '.qbm') {
     return {
       ok: false,
-      message: 'A QuickBooks company file (.QBW) cannot be opened. Export a CSV or Excel list from Customer Center, Vendor Center, or Payroll, then import that file.'
+      message:
+        'A QuickBooks company file (.QBW) cannot be opened. Export a CSV or Excel list from Customer Center, Vendor Center, or Payroll, then import that file.'
     };
   }
   try {
+    let table;
     if (ext === '.xlsx' || (Buffer.isBuffer(buffer) && buffer[0] === 0x50 && buffer[1] === 0x4b)) {
-      const table = parseXlsx(buffer);
-      return { ok: true, ...table, kind: 'xlsx' };
+      table = parseXlsx(buffer);
+      table.fileKind = 'xlsx';
+    } else {
+      table = parseCsv(buffer.toString('utf8'));
+      table.fileKind = 'csv';
     }
-    const table = parseCsv(buffer.toString('utf8'));
-    return { ok: true, ...table, kind: 'csv' };
+    return { ok: true, ...table };
   } catch (err) {
     return {
       ok: false,
@@ -191,4 +302,13 @@ function parseTableBuffer(filePath, buffer) {
   }
 }
 
-module.exports = { parseCsv, parseXlsx, parseTableBuffer };
+module.exports = {
+  parseCsv,
+  parseXlsx,
+  parseTableBuffer,
+  tableFromGrid,
+  headerScore,
+  detectRegister,
+  isBrandText,
+  normKey
+};

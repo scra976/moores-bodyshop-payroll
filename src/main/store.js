@@ -574,6 +574,14 @@ async function saveBooks(data) {
   return { ok: true };
 }
 
+async function writeImportLog(text) {
+  await ensureDirs();
+  const dest = path.join(shopRoot(), 'import-log.txt');
+  const buf = Buffer.from(String(text || ''), 'utf8');
+  await atomicWrite(dest, buf);
+  return dest;
+}
+
 async function saveReceiptPdf(fileName, buffer) {
   await ensureDirs();
   const dest = path.join(receiptsDir(), safeReportName(fileName));
@@ -597,6 +605,7 @@ module.exports = {
   reportsDir,
   saveReportPdf,
   saveReceiptPdf,
+  writeImportLog,
   listReports,
   resolveReportPath,
   safeReportName,

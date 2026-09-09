@@ -68,6 +68,8 @@ const state = {
     rows: [],
     mapping: {},
     replaceDupes: false,
+    looksLikeRegister: false,
+    progress: '',
     log: null,
     error: ''
   },
@@ -2380,55 +2382,83 @@ function renderQbImportCard() {
   const Imp = window.MooresImport;
   const st = state.qbImport || {};
   const kinds = {
-    customers: 'Customers (AR)',
-    vendors: 'Vendors (AP)',
+    customers: 'Customers',
+    vendors: 'Vendors',
     employees: 'Employees',
-    items: 'Items / parts',
-    paychecks: 'Paychecks / payroll history'
+    items: 'Items',
+    paychecks: 'Paychecks',
+    open_invoices: 'Open invoices',
+    bills: 'Bills'
   };
+  if (isExpert()) kinds.transactions = 'Transactions (Expert)';
   const fields = Imp && Imp.FIELDS[st.kind] ? Imp.FIELDS[st.kind] : [];
-  const headerOpts = ['', ...(st.headers || [])];
+  const destValues = [''].concat(fields.map((f) => f[0]));
+  const destLabels = { '': 'Skip' };
+  fields.forEach(([key, label]) => {
+    destLabels[key] = label;
+  });
+  const fieldMap = Imp && Imp.invertMapping ? Imp.invertMapping(st.mapping || {}) : {};
   const mapper = (st.headers || []).length
     ? `<div class="section-title">Column mapper</div>
-        <p class="hint">Match each shop field to a column from the file. Leave a field blank to skip it. Taxes are never calculated on import — only mapped amounts are stored.</p>
+        <p class="hint">Each file column maps to a real field for <strong>${esc(kinds[st.kind] || st.kind)}</strong>, or Skip. Destinations are never company names.</p>
         <div class="grid grid-2">
-          ${fields
-            .map(
-              ([key, label]) => `<div class="field"><label>${esc(label)}</label>
-                <select data-imap="${esc(key)}">${optionList(headerOpts, st.mapping[key] || '', { '': '— skip —' })}</select></div>`
-            )
+          ${(st.headers || [])
+            .map((h) => {
+              const sample = ((st.rows || [])[0] || {})[h] || '';
+              return `<div class="field"><label>${esc(h)}${sample ? ` <span class="muted">e.g. ${esc(String(sample).slice(0, 32))}</span>` : ''}</label>
+                <select data-colmap="${esc(h)}">${optionList(destValues, st.mapping[h] || '', destLabels)}</select></div>`;
+            })
             .join('')}
         </div>
-        <label class="chip" style="margin-top:12px"><input type="checkbox" id="imp-replace"${st.replaceDupes ? ' checked' : ''} /> Replace duplicates</label>
-        <p class="hint">Default is off: existing customers, vendors, employees, items, and paychecks (same person + pay date + check no) are skipped.</p>
-        <div class="row-actions">
-          <button type="button" class="btn btn-primary" id="imp-run">Import</button>
-        </div>`
+        <label class="chip" style="margin-top:12px"><input type="checkbox" id="imp-replace"${st.replaceDupes ? ' checked' : ''} /> Update existing</label>
+        <p class="hint">Off by default: matching records are skipped. Customers/vendors match on name; employees on last + first; paychecks on employee + pay date + check number.</p>`
     : '';
-  const previewRows = (st.rows || []).slice(0, 8);
-  const preview =
-    previewRows.length && (st.headers || []).length
-      ? `<div class="table-wrap" style="margin-top:12px"><table class="data">
-          <thead><tr>${st.headers.map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead>
-          <tbody>${previewRows
-            .map((r) => `<tr>${st.headers.map((h) => `<td>${esc(r[h] || '')}</td>`).join('')}</tr>`)
-            .join('')}</tbody>
-        </table></div>
-        <p class="hint">${st.rows.length} data row${st.rows.length === 1 ? '' : 's'} in file.</p>`
-      : '';
+  let previewHtml = '';
+  let validCount = 0;
+  if (Imp && (st.headers || []).length) {
+    const prev = Imp.previewRows(st.kind, st.rows, fieldMap, state.books, state.data.employees, st.replaceDupes, 20);
+    validCount = prev.valid;
+    if (st.looksLikeRegister && (st.kind === 'customers' || st.kind === 'vendors')) {
+      const names = Imp.uniqueNamesFromRows(st.rows, fieldMap);
+      validCount = names.length;
+      prev.rows = names.slice(0, 20).map((name, i) => ({
+        index: i + 1,
+        status: 'import',
+        reason: 'Unique name from register',
+        name
+      }));
+    }
+    previewHtml = `<div class="section-title">Preview</div>
+      <p class="hint">${prev.total} rows in file · ${prev.valid} will import or update · showing first ${prev.rows.length}.</p>
+      <div class="table-wrap"><table class="data">
+        <thead><tr><th>#</th><th>Result</th><th>Name</th><th>Reason</th></tr></thead>
+        <tbody>${prev.rows
+          .map(
+            (r) => `<tr>
+              <td>${r.index}</td>
+              <td>${esc(r.status === 'import' ? 'will import' : r.status === 'update' ? 'will update' : r.status === 'skip' ? 'skip' : 'error')}</td>
+              <td>${esc(r.name || '')}</td>
+              <td>${esc(r.reason || '')}</td></tr>`
+          )
+          .join('')}</tbody>
+      </table></div>`;
+  }
   const log = st.log
     ? `<div class="disclaimer" style="margin-top:12px">Imported ${st.log.imported} · Skipped ${st.log.skipped}
         ${(st.log.notes || []).map((n) => `<div>${esc(n)}</div>`).join('')}
-        ${(st.log.errors || []).slice(0, 12).map((n) => `<div>${esc(n)}</div>`).join('')}
-        ${(st.log.errors || []).length > 12 ? `<div>…and ${st.log.errors.length - 12} more.</div>` : ''}
+        ${(st.log.errors || []).slice(0, 200).map((n) => `<div>${esc(n)}</div>`).join('')}
+        ${(st.log.errors || []).length > 200 ? `<div>…and ${st.log.errors.length - 200} more in import-log.txt.</div>` : ''}
       </div>`
+    : '';
+  const registerNote = st.looksLikeRegister
+    ? `<div class="warn-banner">This is a transaction export. Pick Import type: Customers, Vendors, Employees, Items, Paychecks, Open invoices, or Bills. Unique names can be imported as customers or vendors. Journal lines are not posted unless type is Transactions and Expert mode is on.</div>`
     : '';
   return `
     <div class="card">
       <div class="section-title">Import QuickBooks</div>
-      <p class="hint">Do not pick a .QBW company file. In QuickBooks export a CSV or Excel list (Customer Center, Vendor Center, Employee list, Item list, or Paycheck / Payroll Summary), then import that file here.</p>
+      <p class="hint">1. Import type · 2. File · 3. Mapper · 4. Preview · 5. Import. Do not pick a .QBW company file — export CSV or Excel from QuickBooks.</p>
       <div class="grid grid-2">
-        <div class="field"><label>What to import</label>
+        <div class="field"><label>Import type</label>
           <select id="imp-kind">${optionList(Object.keys(kinds), st.kind, kinds)}</select></div>
         <div class="field"><label>File</label>
           <input value="${esc(st.fileName || 'No file selected')}" readonly /></div>
@@ -2437,8 +2467,13 @@ function renderQbImportCard() {
         <button type="button" class="btn btn-secondary" id="imp-pick">Choose CSV / Excel file</button>
       </div>
       ${st.error ? `<div class="warn-banner">${esc(st.error)}</div>` : ''}
+      ${registerNote}
       ${mapper}
-      ${preview}
+      ${previewHtml}
+      <p id="imp-progress" class="hint">${esc(st.progress || '')}</p>
+      <div class="row-actions">
+        <button type="button" class="btn btn-primary" id="imp-run"${validCount < 1 ? ' disabled' : ''}>Import</button>
+      </div>
       ${log}
     </div>`;
 }
@@ -2655,7 +2690,7 @@ function bindQbImport() {
     kind.addEventListener('change', () => {
       state.qbImport.kind = kind.value;
       if (state.qbImport.headers && state.qbImport.headers.length) {
-        state.qbImport.mapping = Imp.guessMapping(state.qbImport.kind, state.qbImport.headers);
+        state.qbImport.mapping = Imp.guessColumnMapping(state.qbImport.kind, state.qbImport.headers);
       }
       state.qbImport.log = null;
       render();
@@ -2680,8 +2715,10 @@ function bindQbImport() {
         state.qbImport.fileName = chosen.name || parsed.fileName;
         state.qbImport.headers = parsed.headers || [];
         state.qbImport.rows = parsed.rows || [];
-        state.qbImport.mapping = Imp.guessMapping(state.qbImport.kind, state.qbImport.headers);
+        state.qbImport.looksLikeRegister = Boolean(parsed.looksLikeRegister);
+        state.qbImport.mapping = Imp.guessColumnMapping(state.qbImport.kind, state.qbImport.headers);
         state.qbImport.log = null;
+        state.qbImport.progress = `${(parsed.rows || []).length} rows loaded.`;
         render();
       } catch {
         state.qbImport.error = 'Could not read this file. Export CSV from QuickBooks and try again.';
@@ -2689,41 +2726,75 @@ function bindQbImport() {
       }
     });
   }
-  document.querySelectorAll('[data-imap]').forEach((sel) => {
+  document.querySelectorAll('[data-colmap]').forEach((sel) => {
     sel.addEventListener('change', () => {
-      state.qbImport.mapping[sel.getAttribute('data-imap')] = sel.value;
+      const header = sel.getAttribute('data-colmap');
+      const next = sel.value;
+      if (next) {
+        Object.keys(state.qbImport.mapping || {}).forEach((h) => {
+          if (h !== header && state.qbImport.mapping[h] === next) state.qbImport.mapping[h] = '';
+        });
+      }
+      state.qbImport.mapping[header] = next;
+      render();
     });
   });
   const replace = document.getElementById('imp-replace');
   if (replace) {
     replace.addEventListener('change', () => {
       state.qbImport.replaceDupes = replace.checked;
+      render();
     });
   }
   const run = document.getElementById('imp-run');
   if (run) {
     run.addEventListener('click', async () => {
       const st = state.qbImport;
+      const prog = document.getElementById('imp-progress');
       const result = Imp.applyImport({
         kind: st.kind,
         rows: st.rows,
-        mapping: st.mapping,
+        columnMapping: st.mapping,
         replaceDupes: st.replaceDupes,
         books: state.books,
         employees: state.data.employees,
-        uid
+        uid,
+        looksLikeRegister: st.looksLikeRegister,
+        expert: isExpert(),
+        onProgress: (i, n) => {
+          const msg = `Imported ${i} of ${n}`;
+          st.progress = msg;
+          if (prog) prog.textContent = msg;
+        }
       });
       if (!result.ok) {
-        toast('Import failed.', 'err');
+        st.log = result.log;
+        toast((result.log && result.log.notes && result.log.notes[0]) || 'Import failed.', 'err');
+        render();
         return;
       }
       state.books = result.books;
       state.data.employees = result.employees;
       st.log = result.log;
+      const logLines = [
+        `Import ${st.kind} · ${st.fileName || ''} · ${new Date().toISOString()}`,
+        `Imported ${result.log.imported}, skipped ${result.log.skipped}`,
+        ...(result.log.notes || []),
+        ...(result.log.errors || [])
+      ].join('\n');
       try {
+        if (api.writeImportLog) await api.writeImportLog(logLines);
         if (st.kind === 'employees' || st.kind === 'paychecks') await persist();
-        if (st.kind === 'customers' || st.kind === 'vendors' || st.kind === 'items') await persistBooks();
-        toast(`Imported ${result.log.imported}, skipped ${result.log.skipped}.`, result.log.imported ? 'ok' : 'err');
+        if (
+          st.kind === 'customers' ||
+          st.kind === 'vendors' ||
+          st.kind === 'items' ||
+          st.kind === 'open_invoices' ||
+          st.kind === 'bills'
+        ) {
+          await persistBooks();
+        }
+        toast(`Imported ${result.log.imported} of ${(st.rows || []).length}. Skipped ${result.log.skipped}.`, result.log.imported ? 'ok' : 'err');
         render();
       } catch {
         toast('Imported in memory but could not save.', 'err');

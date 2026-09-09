@@ -284,6 +284,15 @@ function registerIpc() {
     return { ok: true, path: choice.filePaths[0], name: path.basename(choice.filePaths[0]) };
   });
 
+  ipcMain.handle('import:writeLog', async (_event, text) => {
+    try {
+      const dest = await store.writeImportLog(text);
+      return { ok: true, path: dest };
+    } catch (err) {
+      return { ok: false, message: err && err.message ? String(err.message) : 'Could not write import log.' };
+    }
+  });
+
   ipcMain.handle('import:parse', async (_event, filePath) => {
     try {
       const buf = fs.readFileSync(String(filePath || ''));
@@ -293,7 +302,9 @@ function registerIpc() {
         ok: true,
         headers: table.headers,
         rows: table.rows,
-        kind: table.kind,
+        looksLikeRegister: Boolean(table.looksLikeRegister),
+        headerRowIndex: table.headerRowIndex || 0,
+        fileKind: table.fileKind || table.kind || '',
         fileName: path.basename(String(filePath || ''))
       };
     } catch (err) {
