@@ -502,6 +502,201 @@
     return round2(next * ADD_MEDICARE_RATE - prev * ADD_MEDICARE_RATE);
   }
 
+  const DEDUCTION_TYPES = {
+    child_support: 'Child support',
+    garnishment: 'Garnishment',
+    other: 'Other court-ordered'
+  };
+
+  function deductionType(raw) {
+    const t = String(raw || '').toLowerCase().replace(/\s+/g, '_');
+    if (t === 'child_support' || t === 'childsupport' || t === 'child-support') return 'child_support';
+    if (t === 'other' || t === 'other_court_ordered' || t === 'other-court-ordered') return 'other';
+    return 'garnishment';
+  }
+
+  function deductionStatus(raw) {
+    const s = String(raw || 'Active').trim().toLowerCase();
+    if (s === 'paused' || s === 'pause') return 'Paused';
+    if (s === 'ended' || s === 'end' || s === 'inactive') return 'Ended';
+    return 'Active';
+  }
+
+  function isoOnOrAfter(day, start) {
+    if (!start) return true;
+    return String(day || '') >= String(start);
+  }
+
+  function isoOnOrBefore(day, end) {
+    if (!end) return true;
+    return String(day || '') <= String(end);
+  }
+
+  function deductionApplies(row, payday) {
+    if (!row) return false;
+    if (deductionStatus(row.status) !== 'Active') return false;
+    if (!payday) return true;
+    return isoOnOrAfter(payday, row.start) && isoOnOrBefore(payday, row.end);
+  }
+
+  function listDeductions(employee) {
+    const e = employee || {};
+    const src = Array.isArray(e.deductions) ? e.deductions : [];
+    const out = [];
+    for (const row of src) {
+      if (!row || typeof row !== 'object') continue;
+      out.push({
+        id: String(row.id || ''),
+        type: deductionType(row.type),
+        name: String(row.name || '').trim(),
+        method: String(row.method || 'flat').toLowerCase() === 'percent' ? 'percent' : 'flat',
+        amount: round2(Math.max(0, Number(row.amount) || 0)),
+        payee: String(row.payee || '').trim(),
+        status: deductionStatus(row.status),
+        start: String(row.start || ''),
+        end: String(row.end || ''),
+        ytd: round2(Math.max(0, Number(row.ytd) || 0))
+      });
+    }
+    if (out.length) return out;
+    if (round2(e.childSupport) > 0) {
+      out.push({
+        id: 'legacy-cs',
+        type: 'child_support',
+        name: 'Child support',
+        method: 'flat',
+        amount: round2(e.childSupport),
+        payee: '',
+        status: 'Active',
+        start: '',
+        end: '',
+        ytd: 0
+      });
+    }
+    if (round2(e.garnishments) > 0) {
+      out.push({
+        id: 'legacy-gn',
+        type: 'garnishment',
+        name: 'Garnishment',
+        method: 'flat',
+        amount: round2(e.garnishments),
+        payee: '',
+        status: 'Active',
+        start: '',
+        end: '',
+        ytd: 0
+      });
+    }
+    return out;
+  }
+
+  function ensureDeductions(emp) {
+    if (!emp || typeof emp !== 'object') return emp;
+    const migrated = !Array.isArray(emp.deductions) || (!emp.deductions.length && (Number(emp.childSupport) > 0 || Number(emp.garnishments) > 0));
+    const listed = listDeductions(emp);
+    emp.deductions = listed.map((row, i) => ({
+      ...row,
+      id: row.id || `ded-${i + 1}`
+    }));
+    if (migrated) {
+      /* keep legacy numbers for old backups; live calc uses deductions */
+    }
+    return emp;
+  }
+
+  function applyPostTaxDeductions(employee, afterTax, payday) {
+    let remaining = round2(Math.max(0, afterTax));
+    const disposable = remaining;
+    const listed = listDeductions(employee);
+    const order = { child_support: 0, garnishment: 1, other: 2 };
+    const ranked = listed
+      .map((row, index) => ({ row, index }))
+      .filter((x) => deductionApplies(x.row, payday))
+      .sort((a, b) => {
+        const t = order[a.row.type] - order[b.row.type];
+        if (t) return t;
+        return a.index - b.index;
+      });
+    const items = [];
+    for (const { row } of ranked) {
+      const requested =
+        row.method === 'percent' ? round2(disposable * (row.amount / 100)) : round2(row.amount);
+      const taken = round2(Math.min(Math.max(0, requested), remaining));
+      remaining = round2(remaining - taken);
+      if (!taken) continue;
+      items.push({
+        id: row.id,
+        type: row.type,
+        name: row.name,
+        method: row.method,
+        payee: row.payee,
+        amount: taken,
+        ytd: round2((Number(row.ytd) || 0) + taken)
+      });
+    }
+    const childSupport = round2(items.filter((i) => i.type === 'child_support').reduce((s, i) => s + i.amount, 0));
+    const garnishments = round2(items.filter((i) => i.type !== 'child_support').reduce((s, i) => s + i.amount, 0));
+    return { items, childSupport, garnishments, net: remaining, afterTax: round2(afterTax) };
+  }
+
+  function applyDeductionYtd(emp, newItems, prevItems) {
+    ensureDeductions(emp);
+    const prevById = {};
+    for (const p of prevItems || []) {
+      if (p && p.id) prevById[p.id] = round2(p.amount);
+    }
+    const newById = {};
+    for (const n of newItems || []) {
+      if (n && n.id) newById[n.id] = round2(n.amount);
+    }
+    for (const d of emp.deductions) {
+      const prev = prevById[d.id] || 0;
+      const next = newById[d.id] || 0;
+      if (!prev && !next) continue;
+      d.ytd = round2(Math.max(0, round2(d.ytd) - prev + next));
+    }
+    for (const n of newItems || []) {
+      const d = emp.deductions.find((x) => x.id === n.id);
+      n.ytd = d ? round2(d.ytd) : round2((Number(n.ytd) || 0));
+    }
+    return emp;
+  }
+
+  function stubDeductionRows(week) {
+    const items = (week && Array.isArray(week.deductions) ? week.deductions : []).filter(
+      (i) => i && round2(i.amount) > 0
+    );
+    if (items.length) {
+      const cs = items.filter((i) => deductionType(i.type) === 'child_support');
+      const gn = items.filter((i) => deductionType(i.type) !== 'child_support');
+      const label = (kind, n, total) => {
+        const base = kind === 'cs' ? 'Child Support' : 'Garnishment';
+        if (total <= 1 || n === 1) return base;
+        return `${base} ${n}`;
+      };
+      return [
+        ...cs.map((i, n) => ({
+          label: label('cs', n + 1, cs.length),
+          amount: round2(i.amount),
+          ytd: round2(i.ytd)
+        })),
+        ...gn.map((i, n) => ({
+          label: label('gn', n + 1, gn.length),
+          amount: round2(i.amount),
+          ytd: round2(i.ytd)
+        }))
+      ];
+    }
+    const rows = [];
+    if (round2(week && week.childSupport) > 0) {
+      rows.push({ label: 'Child Support', amount: round2(week.childSupport), ytd: round2(week.childSupportYtd) });
+    }
+    if (round2(week && week.garnishments) > 0) {
+      rows.push({ label: 'Garnishment', amount: round2(week.garnishments), ytd: round2(week.garnishmentsYtd) });
+    }
+    return rows;
+  }
+
   function computePay(employee, punchesOrHours, opts) {
     employee = numericEmployee(employee);
     const breakdown = hoursBreakdown(punchesOrHours);
@@ -536,11 +731,11 @@
     const state = va.total;
     const totalTaxes = round2(federal + ss + medicare + state);
     const afterTax = round2(gross - pretax - federal - ss - medicare - state);
-    const childSupportReq = round2(Math.max(0, Number(employee && employee.childSupport) || 0));
-    const garnishReq = round2(Math.max(0, Number(employee && employee.garnishments) || 0));
-    const childSupport = round2(Math.min(childSupportReq, Math.max(0, afterTax)));
-    const garnishments = round2(Math.min(garnishReq, Math.max(0, afterTax - childSupport)));
-    const net = round2(afterTax - childSupport - garnishments);
+    const payday = (opts && (opts.payday || opts.asOf)) || '';
+    const applied = applyPostTaxDeductions(employee, afterTax, payday);
+    const childSupport = applied.childSupport;
+    const garnishments = applied.garnishments;
+    const net = applied.net;
 
     return {
       hourly: round2(hourly),
@@ -566,6 +761,7 @@
       stateExtra: va.extra,
       childSupport,
       garnishments,
+      deductions: applied.items,
       totalTaxes,
       net,
       periodsPerYear: ppy,
@@ -609,6 +805,15 @@
     ensureLeaveBalances,
     applyLeaveUsed,
     numericEmployee,
+    DEDUCTION_TYPES,
+    deductionType,
+    deductionStatus,
+    deductionApplies,
+    listDeductions,
+    ensureDeductions,
+    applyPostTaxDeductions,
+    applyDeductionYtd,
+    stubDeductionRows,
     federalPub15T,
     virginiaWithholding,
     computePay,

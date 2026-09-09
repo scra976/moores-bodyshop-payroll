@@ -500,6 +500,11 @@ table.data th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 table.data tbody tr:hover { background: #f8f9fc; }
 
+.check-no-input {
+  width: 7.5rem;
+  max-width: 100%;
+}
+
 table.data input,
 table.data select {
   height: 32px;

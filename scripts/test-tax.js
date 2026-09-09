@@ -253,6 +253,52 @@ const strEmp = { ...wesley, extraFederal: '43', extraState: '5', childSupport: '
 const strPay = tax.computePay(strEmp, 22);
 assert(strPay.federalExtra === 43 && strPay.stateExtra === 5 && strPay.childSupport === 12.5, 'string profile amounts coerce');
 
+const multi = {
+  ...wesley,
+  deductions: [
+    { id: 'cs1', type: 'child_support', name: 'VA DCSE case 1234', method: 'flat', amount: 21.58, status: 'Active' },
+    { id: 'cs2', type: 'child_support', name: 'VA DCSE case 9999', method: 'flat', amount: 10, status: 'Active' },
+    { id: 'g1', type: 'garnishment', name: 'Credit card levy — Midland', method: 'flat', amount: 15, status: 'Active' },
+    { id: 'g2', type: 'garnishment', name: 'Paused levy', method: 'flat', amount: 99, status: 'Paused' }
+  ]
+};
+const multiPay = tax.computePay(multi, 22, { payday: '2026-09-09' });
+assert(multiPay.deductions.length === 3, `active deductions ${multiPay.deductions.length}`);
+assert(multiPay.childSupport === 31.58, `two CS ${multiPay.childSupport}`);
+assert(multiPay.garnishments === 15, `one garn ${multiPay.garnishments}`);
+assert(multiPay.net === tax.round2(314.14 - 31.58 - 15), `multi net ${multiPay.net}`);
+const stubRows = tax.stubDeductionRows({ deductions: multiPay.deductions });
+assert(stubRows[0].label === 'Child Support' && stubRows[1].label === 'Child Support 2', `labels ${stubRows.map((r) => r.label)}`);
+assert(stubRows[2].label === 'Garnishment', `garn label ${stubRows[2].label}`);
+
+const pctEmp = {
+  ...wesley,
+  deductions: [{ id: 'p1', type: 'garnishment', name: 'Percent levy', method: 'percent', amount: 10, status: 'Active' }]
+};
+const pctPay = tax.computePay(pctEmp, 22);
+assert(pctPay.garnishments === tax.round2(314.14 * 0.1), `percent ${pctPay.garnishments}`);
+
+const dated = {
+  ...wesley,
+  deductions: [
+    { id: 'future', type: 'child_support', name: 'Future order', method: 'flat', amount: 50, status: 'Active', start: '2027-01-01' }
+  ]
+};
+const datedPay = tax.computePay(dated, 22, { payday: '2026-09-09' });
+assert(datedPay.childSupport === 0 && datedPay.deductions.length === 0, 'future start date does not withhold');
+
+const sortA = [
+  { lastName: 'smith', firstName: 'Ann' },
+  { lastName: 'Adams', firstName: 'bob' },
+  { lastName: 'adams', firstName: 'Amy' }
+];
+sortA.sort((a, b) => {
+  const ln = String(a.lastName).localeCompare(String(b.lastName), 'en', { sensitivity: 'base' });
+  if (ln) return ln;
+  return String(a.firstName).localeCompare(String(b.firstName), 'en', { sensitivity: 'base' });
+});
+assert(sortA[0].firstName === 'Amy' && sortA[1].firstName === 'bob' && sortA[2].lastName === 'smith', 'A-Z last then first, case-insensitive');
+
 console.log('TAX_OK', {
   firstFit: first.federal,
   firstVa: first.state,

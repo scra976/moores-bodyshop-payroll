@@ -51,6 +51,7 @@ const state = {
     vacationHours: '',
     holidayHours: '',
     ptoHours: '',
+    checkNumber: '',
     loadedKey: ''
   },
   update: {
@@ -154,9 +155,9 @@ function syncAllLeaveBalances() {
 
 function sortEmployees(list) {
   return [...(list || [])].sort((a, b) => {
-    const ln = String(a.lastName || '').localeCompare(String(b.lastName || ''));
+    const ln = String(a.lastName || '').localeCompare(String(b.lastName || ''), 'en', { sensitivity: 'base' });
     if (ln) return ln;
-    return String(a.firstName || '').localeCompare(String(b.firstName || ''));
+    return String(a.firstName || '').localeCompare(String(b.firstName || ''), 'en', { sensitivity: 'base' });
   });
 }
 
@@ -290,6 +291,7 @@ function emptyEmployee() {
     vaE2: 0,
     childSupport: 0,
     garnishments: 0,
+    deductions: [],
     vacationHoursBalance: '',
     ptoHoursBalance: '',
     vacationYear: 0,
@@ -524,6 +526,110 @@ function bindSsn(id, getter, setter) {
   });
 }
 
+function blankDeduction() {
+  return {
+    id: uid('ded'),
+    type: 'child_support',
+    name: '',
+    method: 'flat',
+    amount: 0,
+    payee: '',
+    status: 'Active',
+    start: '',
+    end: '',
+    ytd: 0
+  };
+}
+
+function deductionEditorHtml(emp) {
+  tax.ensureDeductions(emp);
+  const types = tax.DEDUCTION_TYPES || {
+    child_support: 'Child support',
+    garnishment: 'Garnishment',
+    other: 'Other court-ordered'
+  };
+  const rows = (emp.deductions || [])
+    .map((d) => {
+      const amtLabel = d.method === 'percent' ? 'Percent of disposable/net' : 'Amount per pay period $';
+      return `<div class="line" data-ded-card="${esc(d.id)}">
+        <div class="line-top"><span>${esc(d.name || 'New deduction')}</span>
+          <button type="button" class="btn btn-sm btn-danger" data-del-ded="${esc(d.id)}">Delete</button>
+        </div>
+        <div class="grid grid-3">
+          <div class="field"><label>Type</label>
+            <select data-ded="${esc(d.id)}" data-df="type">${optionList(['child_support', 'garnishment', 'other'], d.type, types)}</select>
+          </div>
+          <div class="field span-2"><label>Internal name (shop only — never on the stub)</label>
+            <input data-ded="${esc(d.id)}" data-df="name" value="${esc(d.name)}" placeholder="VA DCSE case 1234" />
+          </div>
+          <div class="field"><label>Method</label>
+            <select data-ded="${esc(d.id)}" data-df="method">${optionList(['flat', 'percent'], d.method, { flat: 'Dollars per paycheck', percent: 'Percent of disposable/net' })}</select>
+          </div>
+          <div class="field"><label>${esc(amtLabel)}</label>
+            <input data-ded="${esc(d.id)}" data-df="amount" type="number" min="0" step="0.01" value="${esc(d.amount)}" />
+          </div>
+          <div class="field"><label>Agency / payee (not on stub)</label>
+            <input data-ded="${esc(d.id)}" data-df="payee" value="${esc(d.payee || '')}" />
+          </div>
+          <div class="field"><label>Status</label>
+            <select data-ded="${esc(d.id)}" data-df="status">${optionList(['Active', 'Paused', 'Ended'], d.status)}</select>
+          </div>
+          <div class="field"><label>Start date</label>
+            <input data-ded="${esc(d.id)}" data-df="start" type="date" value="${esc(d.start || '')}" />
+          </div>
+          <div class="field"><label>End date</label>
+            <input data-ded="${esc(d.id)}" data-df="end" type="date" value="${esc(d.end || '')}" />
+          </div>
+          <div class="field"><label>YTD withheld</label>
+            <input value="${esc(money(d.ytd))}" readonly />
+          </div>
+        </div>
+      </div>`;
+    })
+    .join('');
+  return `
+    <div class="card">
+      <div class="section-title">Court-ordered deductions</div>
+      <p class="hint">Add as many child-support or garnishment orders as needed. Each row keeps its own YTD. Only Active rows that cover that payday withhold. Child support is taken first, then garnishments. Internal names stay in the shop app and never print on the stub.</p>
+      ${rows || '<p class="muted">No deductions on this employee.</p>'}
+      <div class="row-actions">
+        <button type="button" class="btn btn-secondary" id="btn-add-deduction">Add deduction</button>
+      </div>
+    </div>`;
+}
+
+async function confirmDeleteDeduction(row) {
+  const label = (row && row.name) || '';
+  if (!label) {
+    toast('Give this deduction an internal name before deleting it.', 'err');
+    return false;
+  }
+  const first = await modal({
+    title: 'Delete deduction?',
+    body: `Delete <strong>${esc(label)}</strong>? YTD for this order is removed from the live profile (payweeks already transferred stay as stored).`,
+    buttons: [
+      { id: 'cancel', label: 'Cancel' },
+      { id: 'continue', label: 'Continue', danger: true }
+    ]
+  });
+  if (first !== 'continue') return false;
+  const second = await modal({
+    title: 'Type the internal name to delete',
+    body: `<p>Type <strong>${esc(label)}</strong> to delete this deduction.</p>
+      <div class="field"><label>Internal name</label><input id="modal-input" autocomplete="off" spellcheck="false" /></div>`,
+    buttons: [
+      { id: 'cancel', label: 'Cancel' },
+      { id: 'ok', label: 'Delete', danger: true }
+    ]
+  });
+  if (!second || second.id === 'cancel') return false;
+  if (String(second.value || '').trim().toLowerCase() !== String(label).trim().toLowerCase()) {
+    toast('Internal name did not match. Delete cancelled.', 'err');
+    return false;
+  }
+  return true;
+}
+
 function employeeOptions(selectedId, includeBlank, { forPay } = {}) {
   const source = forPay ? activeEmployees() : visibleEmployees();
   const rows = source.map((e) => {
@@ -576,6 +682,7 @@ function renderEmployees() {
           return `<tr>
             <td>${esc(payweekPeriodLabel(w))}</td>
             <td>${esc(payweekPayday(w) || '—')}</td>
+            <td>${esc(String(w.checkNumber || '').trim() || '—')}</td>
             <td class="num">${esc(hoursCell(w))}</td>
             <td class="num">${money(w.gross)}</td>
             <td class="num">${money(w.federal)}</td>
@@ -588,7 +695,7 @@ function renderEmployees() {
           </tr>`;
         })
         .join('')
-    : `<tr><td colspan="11" class="muted">No payweeks transferred yet.</td></tr>`;
+    : `<tr><td colspan="12" class="muted">No payweeks transferred yet.</td></tr>`;
 
   const statusBadge =
     emp.status === 'Archived'
@@ -756,18 +863,7 @@ function renderEmployees() {
       <p class="disclaimer">Federal: IRS Pub 15-T (2026) Worksheet 1A. Extra withholding is added last. Virginia: $8,750 single or $17,500 married filing jointly, then VA-4 exemptions.</p>
     </div>
 
-    <div class="card">
-      <div class="section-title">Child support / garnishments</div>
-      <p class="hint">Amounts per paycheck, taken from net after taxes. Child support is applied first.</p>
-      <div class="grid grid-2">
-        <div class="field"><label>Child support per paycheck</label>
-          <input id="f-childSupport" type="number" min="0" step="0.01" value="${esc(emp.childSupport || 0)}" />
-        </div>
-        <div class="field"><label>Other garnishments per paycheck</label>
-          <input id="f-garnishments" type="number" min="0" step="0.01" value="${esc(emp.garnishments || 0)}" />
-        </div>
-      </div>
-    </div>
+    ${deductionEditorHtml(emp)}
 
     <div class="card">
       <div class="section-title">Vacation / PTO</div>
@@ -813,6 +909,7 @@ function renderEmployees() {
             <tr>
               <th>Period (Wed–Tue)</th>
               <th>Payday</th>
+              <th>Check No.</th>
               <th class="num">Hours</th>
               <th class="num">Gross</th>
               <th class="num">FIT</th>
@@ -915,8 +1012,6 @@ function bindEmployees() {
     ['f-vaFilingStatus', (v) => (emp.vaFilingStatus = v)],
     ['f-vaE1', (v) => (emp.vaE1 = Number(v) || 0)],
     ['f-vaE2', (v) => (emp.vaE2 = Number(v) || 0)],
-    ['f-childSupport', (v) => (emp.childSupport = Number(v) || 0)],
-    ['f-garnishments', (v) => (emp.garnishments = Number(v) || 0)],
     ['f-vacBal', (v) => (emp.vacationHoursBalance = Number(v) || 0)],
     ['f-ptoBal', (v) => (emp.ptoHoursBalance = Number(v) || 0)],
     ['f-accountLast4', (v) => (emp.accountLast4 = digits(v).slice(0, 4))]
@@ -971,6 +1066,51 @@ function bindEmployees() {
     markDirty();
   });
 
+  tax.ensureDeductions(emp);
+  document.querySelectorAll('[data-ded][data-df]').forEach((el) => {
+    const apply = () => {
+      const id = el.getAttribute('data-ded');
+      const field = el.getAttribute('data-df');
+      const row = (emp.deductions || []).find((d) => d.id === id);
+      if (!row) return;
+      if (field === 'amount') row.amount = Number(el.value) || 0;
+      else row[field] = el.value;
+      markDirty();
+    };
+    el.addEventListener('input', apply);
+    el.addEventListener('change', () => {
+      apply();
+      const field = el.getAttribute('data-df');
+      if (field === 'type' || field === 'method') render();
+    });
+  });
+  const addDed = document.getElementById('btn-add-deduction');
+  if (addDed) {
+    addDed.addEventListener('click', () => {
+      tax.ensureDeductions(emp);
+      emp.deductions.push(blankDeduction());
+      markDirty();
+      render();
+    });
+  }
+  document.querySelectorAll('[data-del-ded]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-del-ded');
+      const row = (emp.deductions || []).find((d) => d.id === id);
+      if (!(await confirmDeleteDeduction(row))) return;
+      emp.deductions = (emp.deductions || []).filter((d) => d.id !== id);
+      markDirty();
+      try {
+        await persist();
+        state.profileDirty = false;
+        toast('Deduction deleted.', 'ok');
+      } catch {
+        toast('Could not save after delete.', 'err');
+      }
+      render();
+    });
+  });
+
   document.getElementById('btn-save-emp').addEventListener('click', async () => {
     if (!emp.firstName || !emp.lastName) {
       toast('First and last name are required.', 'err');
@@ -981,6 +1121,9 @@ function bindEmployees() {
       return;
     }
     try {
+      tax.ensureDeductions(emp);
+      emp.childSupport = 0;
+      emp.garnishments = 0;
       await persist();
       state.profileDirty = false;
       toast('Employee saved.', 'ok');
@@ -1219,8 +1362,11 @@ function payStatsHtml(calc) {
   if (calc.pay.vacationHours) bits.push(`${hoursFmt(calc.pay.vacationHours)} vac`);
   if (calc.pay.ptoHours) bits.push(`${hoursFmt(calc.pay.ptoHours)} PTO`);
   if (calc.pay.holidayHours) bits.push(`${hoursFmt(calc.pay.holidayHours)} holiday`);
-  if (calc.pay.childSupport) bits.push(`${money(calc.pay.childSupport)} child support`);
-  if (calc.pay.garnishments) bits.push(`${money(calc.pay.garnishments)} garnishment`);
+  const applied = calc.pay.deductions || [];
+  for (const d of applied) {
+    if (!d.amount) continue;
+    bits.push(`${d.name || (d.type === 'child_support' ? 'Child support' : 'Garnishment')}: ${money(d.amount)}`);
+  }
   const fitNote = `${money(calc.pay.federalComputed)} calculated + ${money(calc.pay.federalExtra)} extra`;
   const vaNote = `${money(calc.pay.stateComputed)} calculated + ${money(calc.pay.stateExtra)} extra`;
   const preview40 = tax.computePay(calc.emp, 40);
@@ -1254,18 +1400,29 @@ function payStatsHtml(calc) {
       ${fitWhy ? `<p class="disclaimer">${esc(fitWhy)}</p>` : ''}
       <div class="table-wrap">
         <table class="data">
-          <thead><tr><th>FIT</th><th>SS</th><th>Med</th><th>VA</th><th>Pre-tax</th><th>Garnish</th><th>Hourly</th></tr></thead>
+          <thead><tr><th>FIT</th><th>SS</th><th>Med</th><th>VA</th><th>Pre-tax</th><th>Hourly</th></tr></thead>
           <tbody><tr>
             <td>${money(calc.pay.federal)}<div class="hint">${esc(fitNote)}</div></td>
             <td>${money(calc.pay.ss)}</td>
             <td>${money(calc.pay.medicare)}</td>
             <td>${money(calc.pay.state)}<div class="hint">${esc(vaNote)}</div></td>
             <td>${money(calc.pay.pretax)}</td>
-            <td>${money((calc.pay.childSupport || 0) + (calc.pay.garnishments || 0))}</td>
             <td>${money(calc.pay.hourly)}</td>
           </tr></tbody>
         </table>
-      </div>`;
+      </div>
+      ${
+        applied.length
+          ? `<div class="table-wrap" style="margin-top:10px"><table class="data">
+              <thead><tr><th>Active deduction (shop name)</th><th class="num">This check</th></tr></thead>
+              <tbody>${applied
+                .map(
+                  (d) => `<tr><td>${esc(d.name || d.type)}</td><td class="num">${money(d.amount)}</td></tr>`
+                )
+                .join('')}</tbody>
+            </table></div>`
+          : ''
+      }`;
 }
 
 function findPayweek(emp, periodEnd) {
@@ -1301,12 +1458,14 @@ function loadPunchesForWeek() {
         }
       });
     }
+    state.time.checkNumber = existing.checkNumber || '';
   } else {
     const packed = ensureWeekRows(period, []);
     state.time.punches = packed.rows;
     state.time.vacationHours = '';
     state.time.holidayHours = '';
     state.time.ptoHours = '';
+    state.time.checkNumber = '';
   }
   state.time.loadedKey = `${state.time.employeeId || ''}|${period.periodEnd}`;
 }
@@ -1365,7 +1524,7 @@ function currentTimePay() {
   syncLeaveBalances(emp);
   const period = periodFromEnd(state.time.periodEnd);
   const ytd = ytdGrossBefore(emp, period.payday, period.periodEnd);
-  const pay = tax.computePay(emp, currentTimeInput(), { ytdGross: ytd });
+  const pay = tax.computePay(emp, currentTimeInput(), { ytdGross: ytd, payday: period.payday });
   return { emp, hours: pay.totalHours, pay };
 }
 
@@ -1428,6 +1587,10 @@ function renderTimeclocks() {
           <label>Payday (Wednesday)</label>
           <input value="${esc(period.payday)}" readonly />
         </div>
+        <div class="field" style="min-width:140px">
+          <label>Check No.</label>
+          <input id="tc-check" value="${esc(state.time.checkNumber || '')}" placeholder="—" />
+        </div>
       </div>
       <p class="hint">Period ${esc(period.periodStart)} (Wed) through ${esc(period.periodEnd)} (Tue). Paid ${esc(period.payday)}.</p>
       <div class="mode-toggle" role="tablist">
@@ -1487,6 +1650,12 @@ function bindTimeclocks() {
     loadPunchesForWeek();
     render();
   });
+  const checkEl = document.getElementById('tc-check');
+  if (checkEl) {
+    checkEl.addEventListener('input', () => {
+      state.time.checkNumber = checkEl.value;
+    });
+  }
   document.querySelectorAll('[data-time-mode]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const next = btn.getAttribute('data-time-mode') === 'hours' ? 'hours' : 'punches';
@@ -1596,6 +1765,7 @@ function bindTimeclocks() {
         { vacationHours: vacHrs, ptoHours: ptoHrs },
         { vacationHours: prevWeek && prevWeek.vacationHours, ptoHours: prevWeek && prevWeek.ptoHours }
       );
+      tax.applyDeductionYtd(emp, calc.pay.deductions || [], (prevWeek && prevWeek.deductions) || []);
       const record = {
         periodStart: period.periodStart,
         periodEnd: period.periodEnd,
@@ -1621,6 +1791,8 @@ function bindTimeclocks() {
         pretax: calc.pay.pretax,
         childSupport: calc.pay.childSupport,
         garnishments: calc.pay.garnishments,
+        deductions: JSON.parse(JSON.stringify(calc.pay.deductions || [])),
+        checkNumber: String(state.time.checkNumber || '').trim(),
         net: calc.pay.net,
         punches: JSON.parse(JSON.stringify(state.time.punches.concat(extraPunches)))
       };
@@ -1695,7 +1867,7 @@ function companyForReports() {
 }
 
 function employeesForReports() {
-  return state.data.employees || [];
+  return sortEmployees(state.data.employees || []);
 }
 
 async function runFilingPdf(kind) {
@@ -1901,7 +2073,7 @@ function renderReports() {
       </div>
     </div>`;
   } else {
-    const archived = (state.data.employees || []).filter(isArchived);
+    const archived = sortEmployees((state.data.employees || []).filter(isArchived));
     const rows = archived
       .map(
         (e) => `<tr>
@@ -2023,10 +2195,13 @@ function allPayweeks() {
       rows.push({
         employeeId: emp.id,
         name: fullName(emp),
+        lastName: emp.lastName || '',
+        firstName: emp.firstName || '',
         archived: isArchived(emp),
         periodLabel: payweekPeriodLabel(w),
         payday: payweekPayday(w),
         periodEnd: payweekPeriodEnd(w),
+        checkNumber: w.checkNumber || '',
         hours: w.hours,
         gross: w.gross,
         taxes: tax.round2((Number(w.federal) || 0) + (Number(w.ss) || 0) + (Number(w.medicare) || 0) + (Number(w.state) || 0)),
@@ -2037,7 +2212,9 @@ function allPayweeks() {
   rows.sort((a, b) => {
     const pd = String(b.payday || b.periodEnd).localeCompare(String(a.payday || a.periodEnd));
     if (pd) return pd;
-    return a.name.localeCompare(b.name);
+    const ln = String(a.lastName).localeCompare(String(b.lastName), 'en', { sensitivity: 'base' });
+    if (ln) return ln;
+    return String(a.firstName).localeCompare(String(b.firstName), 'en', { sensitivity: 'base' });
   });
   return rows;
 }
@@ -2066,10 +2243,10 @@ function renderPayroll() {
   const archivedCount = (state.data.employees || []).filter(isArchived).length;
   let body = '';
   if (!rows.length) {
-    body = `<tr><td colspan="8" class="muted">No payweeks yet. Transfer a timesheet from Time clocks.</td></tr>`;
+    body = `<tr><td colspan="9" class="muted">No payweeks yet. Transfer a timesheet from Time clocks.</td></tr>`;
   } else {
     for (const g of groups) {
-      body += `<tr><td colspan="8"><strong>Payday ${esc(g.payday === 'unknown' ? '—' : g.payday)}</strong> (Wednesday)
+      body += `<tr><td colspan="9"><strong>Payday ${esc(g.payday === 'unknown' ? '—' : g.payday)}</strong> (Wednesday)
         <button type="button" class="btn btn-sm btn-secondary" data-payday-stubs="${esc(g.payday)}">Download all stubs</button></td></tr>`;
       body += g.rows
         .map(
@@ -2077,6 +2254,7 @@ function renderPayroll() {
             <td>${esc(r.name)}${r.archived ? ' <span class="badge badge-archived">Archived</span>' : ''}</td>
             <td>${esc(r.periodLabel)}</td>
             <td>${esc(r.payday || '—')}</td>
+            <td><input class="check-no-input" data-check-no="${esc(r.employeeId)}|${esc(r.payday || r.periodEnd)}" value="${esc(r.checkNumber)}" placeholder="—" /></td>
             <td class="num">${hoursFmt(r.hours)}</td>
             <td class="num">${money(r.gross)}</td>
             <td class="num">${money(r.taxes)}</td>
@@ -2090,6 +2268,7 @@ function renderPayroll() {
         <td><strong>Totals</strong></td>
         <td></td>
         <td></td>
+        <td></td>
         <td class="num"><strong>${hoursFmt(totals.hours)}</strong></td>
         <td class="num"><strong>${money(totals.gross)}</strong></td>
         <td class="num"><strong>${money(totals.taxes)}</strong></td>
@@ -2101,7 +2280,7 @@ function renderPayroll() {
   return `
     <div class="card">
       <div class="toolbar">
-        <p class="hint" style="margin:0">Weekly · Wed–Tue · Paid Wednesday. Download a check stub PDF for one person or everyone on that payday. Stubs are saved in Reports.</p>
+        <p class="hint" style="margin:0">Weekly · Wed–Tue · Paid Wednesday. Enter Check No. before you print. Blank shows as — here and is omitted on the printed stub.</p>
         <label class="chip"><input type="checkbox" id="pr-show-archived"${state.showArchived ? ' checked' : ''} /> Show archived${archivedCount ? ` (${archivedCount})` : ''}</label>
       </div>
       <div class="table-wrap">
@@ -2111,6 +2290,7 @@ function renderPayroll() {
               <th>Name</th>
               <th>Period (Wed–Tue)</th>
               <th>Payday</th>
+              <th>Check No.</th>
               <th class="num">Hours</th>
               <th class="num">Gross</th>
               <th class="num">Total taxes</th>
@@ -2567,6 +2747,23 @@ function render() {
         render();
       });
     }
+    document.querySelectorAll('[data-check-no]').forEach((input) => {
+      const save = async () => {
+        const [id, payday] = String(input.getAttribute('data-check-no') || '').split('|');
+        const e = findEmployee(id);
+        if (!e) return;
+        const week = (e.payweeks || []).find((w) => (w.payday || w.periodEnd) === payday);
+        if (!week) return;
+        week.checkNumber = String(input.value || '').trim();
+        try {
+          await persist();
+        } catch {
+          toast('Could not save check number.', 'err');
+        }
+      };
+      input.addEventListener('change', save);
+      input.addEventListener('blur', save);
+    });
     document.querySelectorAll('[data-row-stub]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const [id, payday] = String(btn.getAttribute('data-row-stub') || '').split('|');
@@ -2580,7 +2777,7 @@ function render() {
       btn.addEventListener('click', async () => {
         const payday = btn.getAttribute('data-payday-stubs');
         const items = [];
-        for (const emp of state.data.employees || []) {
+        for (const emp of sortEmployees(state.data.employees || [])) {
           for (const week of emp.payweeks || []) {
             if ((week.payday || week.periodEnd) !== payday) continue;
             const year = String(payday).slice(0, 4);

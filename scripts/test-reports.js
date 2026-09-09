@@ -54,6 +54,19 @@ assert(ytd.net === 314.14, `ytd net ${ytd.net}`);
 const stub = R.paystubHtml(emp, emp.payweeks[0], ytd, { name: "Moore's Body Shop" }, { ein: '123456789' });
 assert(stub.includes('314.14') || stub.includes('$314.14'), 'stub has net');
 assert(stub.includes('Employee pay stub'), 'stub title');
+assert(!/Child Support/i.test(stub), 'no child support section when none');
+assert(!/Garnishment/i.test(stub), 'no garnishment section when none');
+assert(!stub.includes('Check No.'), 'omit Check No. when empty');
+const stubChk = R.paystubHtml(
+  emp,
+  { ...emp.payweeks[0], checkNumber: '1042', deductions: [{ id: 'cs1', type: 'child_support', name: 'VA DCSE case 1234', amount: 40, ytd: 40 }] },
+  { ...ytd, childSupport: 40, net: 274.14 },
+  { name: "Moore's Body Shop" },
+  {}
+);
+assert(stubChk.includes('Check No.') && stubChk.includes('1042'), 'check number on stub');
+assert(stubChk.includes('Child Support'), 'child support row when present');
+assert(!stubChk.includes('VA DCSE case 1234'), 'internal name stays off the stub');
 const w2 = R.w2Html(emp, 2026, ytd, { name: "Moore's Body Shop" }, {});
 assert(w2.includes('Form W-2 worksheet'), 'w2 worksheet');
 const q = R.quarterWindow(2026, 3);

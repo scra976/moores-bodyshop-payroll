@@ -209,10 +209,40 @@
     </div>`;
   }
 
+  function checkNumberOf(week) {
+    return String((week && week.checkNumber) || '').trim();
+  }
+
+  function deductionBlock(week, ytd) {
+    const rows = tax && tax.stubDeductionRows ? tax.stubDeductionRows(week) : [];
+    const filled = rows.map((r) => {
+      let y = round2(r.ytd);
+      if (!y) {
+        if (/^Child Support/i.test(r.label)) y = round2(ytd && ytd.childSupport);
+        else y = round2(ytd && ytd.garnishments);
+      }
+      return { ...r, ytd: y };
+    });
+    if (!filled.length) return '';
+    const body = filled
+      .map((r) => `<tr><td>${esc(r.label)}</td><td class="num">${money(r.amount)}</td><td class="num">${money(r.ytd)}</td></tr>`)
+      .join('');
+    return `<div>
+          <h2>Deductions</h2>
+          <table>
+            <thead><tr><th></th><th class="num">This check</th><th class="num">YTD</th></tr></thead>
+            <tbody>${body}</tbody>
+          </table>
+        </div>`;
+  }
+
   function paystubHtml(emp, week, ytd, company, settings) {
     const co = companyBlock(company, settings);
     const name = fullName(emp);
     const period = `${week.periodStart || '—'} – ${week.periodEnd || week.weekEnding || '—'}`;
+    const checkNo = checkNumberOf(week);
+    const checkLine = checkNo ? `<div class="kv"><b>Check No.</b> ${esc(checkNo)}</div>` : '';
+    const extraDed = deductionBlock(week, ytd);
     const inner = `<div class="page">
       ${header(co, 'Employee pay stub')}
       <div class="grid2">
@@ -225,8 +255,10 @@
         <div class="box">
           <div class="kv"><b>Pay period</b> ${esc(period)}</div>
           <div class="kv"><b>Payday</b> ${esc(week.payday || '—')}</div>
+          ${checkLine}
           <div class="kv"><b>Pay type</b> ${esc(emp.payType === 'salary' ? 'Salary' : 'Hourly')} · ${esc(emp.payFrequency || 'weekly')}</div>
           <div class="kv"><b>Rate</b> ${esc(emp.payType === 'salary' ? money(emp.rate) : money(emp.rate) + '/hr')}</div>
+          <div class="kv"><b>Net pay</b> ${money(week.net)}</div>
         </div>
       </div>
       <h2>Hours</h2>
@@ -254,7 +286,7 @@
           </table>
         </div>
         <div>
-          <h2>Deductions</h2>
+          <h2>Taxes</h2>
           <table>
             <thead><tr><th></th><th class="num">This check</th><th class="num">YTD</th></tr></thead>
             <tbody>
@@ -262,12 +294,11 @@
               <tr><td>Social Security</td><td class="num">${money(week.ss)}</td><td class="num">${money(ytd.ss)}</td></tr>
               <tr><td>Medicare</td><td class="num">${money(week.medicare)}</td><td class="num">${money(ytd.medicare)}</td></tr>
               <tr><td>Virginia income tax</td><td class="num">${money(week.state)}</td><td class="num">${money(ytd.state)}</td></tr>
-              <tr><td>Child support</td><td class="num">${money(week.childSupport)}</td><td class="num">${money(ytd.childSupport)}</td></tr>
-              <tr><td>Other garnishments</td><td class="num">${money(week.garnishments)}</td><td class="num">${money(ytd.garnishments)}</td></tr>
             </tbody>
           </table>
         </div>
       </div>
+      ${extraDed ? `<div class="grid2" style="margin-top:12px">${extraDed}<div></div></div>` : ''}
       <p class="disclaimer">Vacation remaining: ${hoursFmt(emp.vacationHoursBalance)} h · PTO remaining: ${hoursFmt(emp.ptoHoursBalance)} h. This stub is produced from Moore's Body Shop payroll records. Keep with your records.</p>
     </div>`;
     return wrap(`Pay stub · ${name} · ${week.payday || ''}`, inner);
@@ -466,6 +497,12 @@
     const co = companyBlock(company, settings);
     const rows = (employees || [])
       .filter((e) => String(e.hireDate || '').startsWith(String(year)))
+      .slice()
+      .sort((a, b) => {
+        const ln = String(a.lastName || '').localeCompare(String(b.lastName || ''), 'en', { sensitivity: 'base' });
+        if (ln) return ln;
+        return String(a.firstName || '').localeCompare(String(b.firstName || ''), 'en', { sensitivity: 'base' });
+      })
       .map((e) => `<tr><td>${esc(fullName(e))}</td><td>${esc(e.hireDate || '—')}</td><td>${esc(addr(e.address))}</td><td>${esc(formatSsn(e.ssn, { last4: true }))}</td></tr>`);
     const inner = `<div class="page">
       ${header(co, `Virginia new-hire listing · ${esc(year)}`)}
