@@ -725,6 +725,7 @@ function renderEmployees() {
         <label class="chip"><input type="checkbox" id="emp-show-archived"${state.showArchived ? ' checked' : ''} /> Show archived${archivedCount ? ` (${archivedCount})` : ''}</label>
         <button class="btn btn-primary" data-nav="add">Add employee</button>
       </div>
+      ${isDevMode() ? '' : '<p class="hint">Shop books tabs are hidden. Settings → Dev to show them. Payroll and books data stay in AppData.</p>'}
     </div>`;
 
   if (!emp) {
@@ -2647,7 +2648,7 @@ function renderSettings() {
 
     <div class="card">
       <div class="section-title">Dev</div>
-      <p class="hint">Off (default) shows Payroll and Settings only. Shop books tabs stay hidden. Turning Dev on shows Dashboard, AR, AP, GL, Inventory, and Reports. Toggling does not delete any data.</p>
+      <p class="hint">Off (default) shows Payroll and Settings only. Shop books tabs stay hidden — the data is still in AppData and is not deleted. Turning Dev on shows Dashboard, AR, AP, GL, Inventory, and Reports.</p>
       <div class="field" style="max-width:280px">
         <label>Dev mode</label>
         <select id="s-dev-mode">${optionList(['off', 'on'], isDevMode() ? 'on' : 'off', { off: 'Off (default)', on: 'On — show all tabs' })}</select>

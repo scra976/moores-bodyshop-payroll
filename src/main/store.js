@@ -361,10 +361,7 @@ async function loadSettings() {
       parsed = {};
     }
     if (isPlaceholderFeed(rawUrl) && existing.updateUrl === DEFAULT_UPDATE_URL) {
-      return saveSettings({ updateUrl: DEFAULT_UPDATE_URL, devMode: false });
-    }
-    if (!Object.prototype.hasOwnProperty.call(parsed, 'devMode')) {
-      return saveSettings({ ...existing, devMode: false });
+      return saveSettings({ updateUrl: DEFAULT_UPDATE_URL });
     }
     return existing;
   } catch {
