@@ -52,6 +52,7 @@ app.whenReady().then(async () => {
 
   const settings = await store.loadSettings();
   if (settings.checkOnStartup !== false) throw new Error('check on startup must default off');
+  if (settings.devMode !== false) throw new Error('devMode must default off');
   if (JSON.stringify(settings).toLowerCase().includes('ssn')) throw new Error('settings leaked ssn key');
 
   process.stdout.write(`SMOKE_OK ${meta.dataPath}\n`);

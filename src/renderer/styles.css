@@ -177,6 +177,8 @@ button { cursor: pointer; }
 
 .nav-item svg { flex-shrink: 0; opacity: 0.9; }
 
+body.dev-off .books-nav { display: none !important; }
+
 .mode-toggle {
   display: inline-flex;
   flex-wrap: wrap;

@@ -343,6 +343,71 @@ const stubLoan = tax.stubDeductionRows({
 assert(stubLoan[0].label === 'Loan' && stubLoan[1].label === 'Loan 2', `loan labels ${stubLoan.map((r) => r.label)}`);
 assert(!stubLoan.some((r) => /Tool loan/i.test(r.label)), 'internal loan name stays off stub');
 
+const skipPay = tax.computePay(multi, 22, { payday: '2026-09-09', skipDeductions: true });
+assert(skipPay.childSupport === 0 && skipPay.garnishments === 0 && skipPay.loans === 0, 'skip takes no CS/garnish/loans');
+assert(skipPay.deductions.length === 0, 'skip has no $0 deduction lines');
+assert(skipPay.federal === multiPay.federal && skipPay.state === multiPay.state, 'skip still runs taxes');
+assert(
+  skipPay.net === tax.round2(skipPay.gross - skipPay.pretax - skipPay.federal - skipPay.ss - skipPay.medicare - skipPay.state),
+  `skip net is after tax only ${skipPay.net}`
+);
+assert(tax.stubDeductionRows({ deductions: skipPay.deductions }).length === 0, 'stub omits skipped deductions');
+
+const loanSkipEmp = {
+  ...wesley,
+  deductions: [
+    { id: 'loan1', type: 'loan', name: 'Tool loan 2026', method: 'flat', amount: 50, originalAmount: 80, remaining: 80, ytd: 0, status: 'Active' }
+  ]
+};
+const skippedLoan = tax.computePay(loanSkipEmp, 22, { payday: '2026-09-09', skipDeductions: true });
+assert(skippedLoan.loans === 0, 'skip does not withhold loan');
+tax.applyDeductionYtd(loanSkipEmp, [], [], '2026-09-09');
+assert(loanSkipEmp.deductions[0].remaining === 80, 'skip does not change remaining');
+assert(loanSkipEmp.deductions[0].ytd === 0, 'skip does not change ytd before sync');
+
+const ytdEmp = {
+  ...wesley,
+  payweeks: [],
+  deductions: [
+    { id: 'cs1', type: 'child_support', name: 'VA DCSE', method: 'flat', amount: 20, status: 'Active', ytd: 0 }
+  ]
+};
+const yw1 = tax.computePay(ytdEmp, 22, { payday: '2026-09-09', periodEnd: '2026-09-08' });
+assert(yw1.deductions[0].amount === 20 && yw1.deductions[0].ytd === 20, `first week ytd ${yw1.deductions[0].ytd}`);
+ytdEmp.payweeks.push({ payday: '2026-09-09', periodEnd: '2026-09-08', skipDeductions: false, deductions: yw1.deductions });
+tax.syncDeductionYtdFromWeeks(ytdEmp, '2026-09-09');
+assert(ytdEmp.deductions[0].ytd === 20, 'employee ytd after first finalize');
+const yw2 = tax.computePay(ytdEmp, 22, { payday: '2026-09-16', periodEnd: '2026-09-15' });
+assert(yw2.deductions[0].ytd === 40, `second week ytd ${yw2.deductions[0].ytd}`);
+ytdEmp.payweeks.push({ payday: '2026-09-16', periodEnd: '2026-09-15', skipDeductions: false, deductions: yw2.deductions });
+tax.syncDeductionYtdFromWeeks(ytdEmp, '2026-09-16');
+assert(ytdEmp.deductions[0].ytd === 40, 'employee ytd after second');
+const yw1again = tax.computePay(ytdEmp, 22, { payday: '2026-09-09', periodEnd: '2026-09-08' });
+assert(yw1again.deductions[0].ytd === 40, `re-transfer does not double ytd ${yw1again.deductions[0].ytd}`);
+ytdEmp.payweeks[0] = { payday: '2026-09-09', periodEnd: '2026-09-08', skipDeductions: false, deductions: yw1again.deductions };
+tax.syncDeductionYtdFromWeeks(ytdEmp, '2026-09-09');
+assert(ytdEmp.deductions[0].ytd === 40, 'sync after replace still 40');
+ytdEmp.payweeks.push({
+  payday: '2025-12-31',
+  periodEnd: '2025-12-30',
+  skipDeductions: false,
+  deductions: [{ id: 'cs1', amount: 99, ytd: 99 }]
+});
+const y2026 = tax.computePay(ytdEmp, 22, { payday: '2026-09-23', periodEnd: '2026-09-22' });
+assert(y2026.deductions[0].ytd === 60, `calendar year ignores prior year ${y2026.deductions[0].ytd}`);
+
+const orderEmp = {
+  ...wesley,
+  deductions: [
+    { id: 'loan1', type: 'loan', name: 'Loan', method: 'flat', amount: 400, originalAmount: 400, remaining: 400, status: 'Active' },
+    { id: 'cs1', type: 'child_support', name: 'CS', method: 'flat', amount: 40, status: 'Active' }
+  ]
+};
+const orderPay = tax.computePay(orderEmp, 22, { payday: '2026-09-09' });
+assert(orderPay.childSupport === 40, 'CS before loan');
+assert(orderPay.net === 0, 'loan last takes leftover net');
+assert(orderPay.loans === tax.round2(314.14 - 40), `loan leftover ${orderPay.loans}`);
+
 const sortA = [
   { lastName: 'smith', firstName: 'Ann' },
   { lastName: 'Adams', firstName: 'bob' },

@@ -535,13 +535,15 @@
     return String(day || '') <= String(end);
   }
 
+  function paydayYear(iso) {
+    const y = parseInt(String(iso || '').slice(0, 4), 10);
+    return Number.isFinite(y) ? y : 0;
+  }
+
   function deductionApplies(row, payday) {
     if (!row) return false;
     if (deductionStatus(row.status) !== 'Active') return false;
-    if (deductionType(row.type) === 'loan') {
-      const rem = loanRemaining(row);
-      if (rem <= 0 && round2(row.originalAmount) > 0) return false;
-    }
+    if (deductionType(row.type) === 'loan' && loanRemaining(row) <= 0) return false;
     if (!payday) return true;
     return isoOnOrAfter(payday, row.start) && isoOnOrBefore(payday, row.end);
   }
@@ -576,6 +578,7 @@
         start: String(row.start || ''),
         end: String(row.end || ''),
         ytd: round2(Math.max(0, Number(row.ytd) || 0)),
+        ytdYear: paydayYear(row.ytdYear) || 0,
         originalAmount: round2(Math.max(0, Number(row.originalAmount) || 0)),
         remaining: loanRemaining(row)
       });
@@ -626,8 +629,39 @@
     return emp;
   }
 
-  function applyPostTaxDeductions(employee, afterTax, payday) {
-    let remaining = round2(Math.max(0, afterTax));
+  function ytdForDeduction(employee, deductionId, payday, opts) {
+    const year = paydayYear(payday);
+    if (!year || !deductionId) return 0;
+    const exclude = opts && opts.excludePeriodEnd ? String(opts.excludePeriodEnd) : '';
+    let sum = round2((opts && opts.extraAmount) || 0);
+    for (const w of (employee && employee.payweeks) || []) {
+      if (!w || w.skipDeductions) continue;
+      const end = String(w.periodEnd || w.weekEnding || '');
+      if (exclude && end === exclude) continue;
+      if (paydayYear(w.payday || w.periodEnd) !== year) continue;
+      for (const d of w.deductions || []) {
+        if (d && d.id === deductionId) sum = round2(sum + round2(d.amount));
+      }
+    }
+    return sum;
+  }
+
+  function syncDeductionYtdFromWeeks(emp, payday) {
+    ensureDeductions(emp);
+    const year = paydayYear(payday);
+    for (const d of emp.deductions || []) {
+      d.ytdYear = year || d.ytdYear || 0;
+      d.ytd = ytdForDeduction(emp, d.id, payday, {});
+    }
+    return emp;
+  }
+
+  function applyPostTaxDeductions(employee, afterTax, payday, opts) {
+    const after = round2(Math.max(0, afterTax));
+    if (opts && opts.skipDeductions) {
+      return { items: [], childSupport: 0, garnishments: 0, loans: 0, net: after, afterTax: after };
+    }
+    let remaining = after;
     const disposable = remaining;
     const listed = listDeductions(employee);
     const order = { child_support: 0, garnishment: 1, other: 2, loan: 3 };
@@ -642,14 +676,14 @@
     const items = [];
     for (const { row } of ranked) {
       const base = row.type === 'loan' ? remaining : disposable;
-      let requested =
+      let scheduled =
         row.method === 'percent' ? round2(base * (row.amount / 100)) : round2(row.amount);
       if (row.type === 'loan') {
         const bal = round2(row.remaining);
-        if (round2(row.originalAmount) > 0 && bal <= 0) continue;
-        if (bal > 0) requested = round2(Math.min(requested, bal));
+        if (bal <= 0) continue;
+        scheduled = round2(Math.min(scheduled, bal, remaining));
       }
-      const taken = round2(Math.min(Math.max(0, requested), remaining));
+      const taken = round2(Math.min(Math.max(0, scheduled), remaining));
       remaining = round2(remaining - taken);
       if (!taken) continue;
       const nextRemaining = row.type === 'loan' ? round2(Math.max(0, round2(row.remaining) - taken)) : null;
@@ -660,7 +694,10 @@
         method: row.method,
         payee: row.payee,
         amount: taken,
-        ytd: round2((Number(row.ytd) || 0) + taken),
+        ytd: ytdForDeduction(employee, row.id, payday, {
+          excludePeriodEnd: opts && opts.periodEnd,
+          extraAmount: taken
+        }),
         remaining: nextRemaining
       });
     }
@@ -674,24 +711,6 @@
 
   function applyDeductionYtd(emp, newItems, prevItems) {
     ensureDeductions(emp);
-    const prevById = {};
-    for (const p of prevItems || []) {
-      if (p && p.id) prevById[p.id] = round2(p.amount);
-    }
-    const newById = {};
-    for (const n of newItems || []) {
-      if (n && n.id) newById[n.id] = round2(n.amount);
-    }
-    for (const d of emp.deductions) {
-      const prev = prevById[d.id] || 0;
-      const next = newById[d.id] || 0;
-      if (!prev && !next) continue;
-      d.ytd = round2(Math.max(0, round2(d.ytd) - prev + next));
-    }
-    for (const n of newItems || []) {
-      const d = emp.deductions.find((x) => x.id === n.id);
-      n.ytd = d ? round2(d.ytd) : round2((Number(n.ytd) || 0));
-    }
     applyLoanBalances(emp, newItems, prevItems);
     return emp;
   }
@@ -821,7 +840,10 @@
     const totalTaxes = round2(federal + ss + medicare + state);
     const afterTax = round2(gross - pretax - federal - ss - medicare - state);
     const payday = (opts && (opts.payday || opts.asOf)) || '';
-    const applied = applyPostTaxDeductions(employee, afterTax, payday);
+    const applied = applyPostTaxDeductions(employee, afterTax, payday, {
+      skipDeductions: Boolean(opts && opts.skipDeductions),
+      periodEnd: (opts && opts.periodEnd) || ''
+    });
     const childSupport = applied.childSupport;
     const garnishments = applied.garnishments;
     const loans = applied.loans;
@@ -905,6 +927,9 @@
     applyPostTaxDeductions,
     applyDeductionYtd,
     applyLoanBalances,
+    paydayYear,
+    ytdForDeduction,
+    syncDeductionYtdFromWeeks,
     loanRemaining,
     stubDeductionRows,
     federalPub15T,

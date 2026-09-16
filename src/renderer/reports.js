@@ -216,8 +216,8 @@
   function deductionBlock(week, ytd, emp) {
     const rows = tax && tax.stubDeductionRows ? tax.stubDeductionRows(week, emp) : [];
     const filled = rows.map((r) => {
-      let y = round2(r.ytd);
-      if (!y) {
+      let y = r.ytd == null ? 0 : round2(r.ytd);
+      if (r.ytd == null) {
         if (/^Child Support/i.test(r.label)) y = round2(ytd && ytd.childSupport);
         else if (/^Loan/i.test(r.label)) y = round2(ytd && ytd.loans);
         else y = round2(ytd && ytd.garnishments);

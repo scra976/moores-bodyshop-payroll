@@ -92,7 +92,8 @@ function defaultSettings() {
     ein: '',
     vaAccount: '',
     vaUiAccount: '',
-    uiMode: 'novice'
+    uiMode: 'novice',
+    devMode: false
   };
 }
 
@@ -351,14 +352,19 @@ async function loadSettings() {
   try {
     await fsp.access(settingsPath(), fs.constants.F_OK);
     let rawUrl = '';
+    let parsed = {};
     try {
-      const parsed = JSON.parse(await fsp.readFile(settingsPath(), 'utf8'));
-      rawUrl = parsed && parsed.updateUrl;
+      parsed = JSON.parse(await fsp.readFile(settingsPath(), 'utf8')) || {};
+      rawUrl = parsed.updateUrl;
     } catch {
       rawUrl = '';
+      parsed = {};
     }
     if (isPlaceholderFeed(rawUrl) && existing.updateUrl === DEFAULT_UPDATE_URL) {
-      return saveSettings({ updateUrl: DEFAULT_UPDATE_URL });
+      return saveSettings({ updateUrl: DEFAULT_UPDATE_URL, devMode: false });
+    }
+    if (!Object.prototype.hasOwnProperty.call(parsed, 'devMode')) {
+      return saveSettings({ ...existing, devMode: false });
     }
     return existing;
   } catch {
@@ -394,7 +400,8 @@ function sanitizeSettings(patch) {
     ein: String(next.ein || '').replace(/[^\d]/g, '').slice(0, 9),
     vaAccount: String(next.vaAccount || '').trim().slice(0, 32),
     vaUiAccount: String(next.vaUiAccount || '').trim().slice(0, 32),
-    uiMode: String(next.uiMode || 'novice').toLowerCase() === 'expert' ? 'expert' : 'novice'
+    uiMode: String(next.uiMode || 'novice').toLowerCase() === 'expert' ? 'expert' : 'novice',
+    devMode: Boolean(next.devMode)
   };
   return allowed;
 }

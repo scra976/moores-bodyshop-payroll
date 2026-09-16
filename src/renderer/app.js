@@ -11,6 +11,7 @@ const DEFAULT_ADDRESS = {
 };
 
 const PAYROLL_VIEWS = ['employees', 'add', 'timeclocks', 'payroll', 'payroll-settings'];
+const BOOKS_NAV_VIEWS = ['dashboard', 'ar', 'ap', 'gl', 'inventory', 'reports'];
 
 const TITLES = {
   dashboard: ['Dashboard', 'Shop snapshot'],
@@ -34,7 +35,7 @@ const US_STATES = [
 ];
 
 const state = {
-  view: 'dashboard',
+  view: 'employees',
   data: null,
   books: null,
   settings: null,
@@ -53,6 +54,7 @@ const state = {
     ptoHours: '',
     checkNumber: '',
     bankId: '',
+    skipDeductions: false,
     loadedKey: ''
   },
   update: {
@@ -471,9 +473,20 @@ function isExpert() {
   return Boolean(state.settings && state.settings.uiMode === 'expert');
 }
 
+function isDevMode() {
+  return Boolean(state.settings && state.settings.devMode);
+}
+
 function applyModeClass() {
   document.body.classList.toggle('mode-expert', isExpert());
   document.body.classList.toggle('mode-novice', !isExpert());
+  document.body.classList.toggle('dev-on', isDevMode());
+  document.body.classList.toggle('dev-off', !isDevMode());
+  const sub = document.querySelector('.brand-sub');
+  if (sub) sub.textContent = isDevMode() ? 'BOOKS' : 'PAYROLL';
+  if (!isDevMode() && BOOKS_NAV_VIEWS.includes(state.view)) {
+    state.view = 'employees';
+  }
 }
 
 function booksCtx() {
@@ -1420,13 +1433,34 @@ function payStatsHtml(calc) {
   if (calc.pay.vacationHours) bits.push(`${hoursFmt(calc.pay.vacationHours)} vac`);
   if (calc.pay.ptoHours) bits.push(`${hoursFmt(calc.pay.ptoHours)} PTO`);
   if (calc.pay.holidayHours) bits.push(`${hoursFmt(calc.pay.holidayHours)} holiday`);
-  const applied = calc.pay.deductions || [];
+  const skip = Boolean(state.time.skipDeductions);
+  const applied = skip ? [] : calc.pay.deductions || [];
+  const loanBits = [];
   for (const d of applied) {
     if (!d.amount) continue;
-    bits.push(
-      `${d.name || (d.type === 'loan' ? 'Loan' : d.type === 'child_support' ? 'Child support' : 'Garnishment')}: ${money(d.amount)}`
-    );
+    const label =
+      d.type === 'loan'
+        ? 'Loan'
+        : d.type === 'child_support'
+          ? 'Child support'
+          : d.type === 'other'
+            ? 'Other court'
+            : 'Garnishment';
+    bits.push(`${d.name || label}: ${money(d.amount)}`);
+    if (d.type === 'loan') loanBits.push(`${d.name || 'Loan'}: ${money(d.amount)} this check · YTD ${money(d.ytd)}`);
   }
+  const dedRows = applied
+    .filter((d) => tax.round2(d.amount) > 0)
+    .map((d) => {
+      const label =
+        d.type === 'loan'
+          ? d.name || 'Loan'
+          : d.type === 'child_support'
+            ? d.name || 'Child support'
+            : d.name || (d.type === 'other' ? 'Other court' : 'Garnishment');
+      return `<tr><td>${esc(label)}</td><td class="num">${money(d.amount)}</td><td class="num">${money(d.ytd)}</td></tr>`;
+    })
+    .join('');
   const fitNote = `${money(calc.pay.federalComputed)} calculated + ${money(calc.pay.federalExtra)} extra`;
   const vaNote = `${money(calc.pay.stateComputed)} calculated + ${money(calc.pay.stateExtra)} extra`;
   const preview40 = tax.computePay(calc.emp, 40);
@@ -1456,7 +1490,21 @@ function payStatsHtml(calc) {
         <div class="stat"><div class="k">Taxes</div><div class="v neg">${money(calc.pay.totalTaxes)}</div></div>
         <div class="stat"><div class="k">Net</div><div class="v pos">${money(calc.pay.net)}</div></div>
       </div>
+      ${
+        skip
+          ? '<p class="hint">Deductions &amp; loans skipped this payweek. Taxes still run. Loan balances and deduction YTD will not change.</p>'
+          : ''
+      }
+      ${
+        !skip && dedRows
+          ? `<div class="table-wrap" style="margin-top:10px"><table class="data">
+              <thead><tr><th>Deduction / loan (preview)</th><th class="num">This check</th><th class="num">YTD</th></tr></thead>
+              <tbody>${dedRows}</tbody>
+            </table></div>`
+          : ''
+      }
       ${bits.length ? `<p class="hint">${esc(bits.join(' · '))}</p>` : ''}
+      ${!skip && loanBits.length ? `<p class="hint">${esc(loanBits.join(' · '))}</p>` : ''}
       ${fitWhy && isExpert() ? `<p class="disclaimer expert-only">${esc(fitWhy)}</p>` : ''}
       <div class="table-wrap">
         <table class="data">
@@ -1520,6 +1568,7 @@ function loadPunchesForWeek() {
     }
     state.time.checkNumber = existing.checkNumber || '';
     state.time.bankId = existing.bankId || state.time.bankId || '';
+    state.time.skipDeductions = Boolean(existing.skipDeductions);
   } else {
     const packed = ensureWeekRows(period, []);
     state.time.punches = packed.rows;
@@ -1528,6 +1577,7 @@ function loadPunchesForWeek() {
     state.time.ptoHours = '';
     state.time.checkNumber = '';
     state.time.bankId = state.time.bankId || '';
+    state.time.skipDeductions = false;
   }
   state.time.loadedKey = `${state.time.employeeId || ''}|${period.periodEnd}`;
 }
@@ -1586,7 +1636,12 @@ function currentTimePay() {
   syncLeaveBalances(emp);
   const period = periodFromEnd(state.time.periodEnd);
   const ytd = ytdGrossBefore(emp, period.payday, period.periodEnd);
-  const pay = tax.computePay(emp, currentTimeInput(), { ytdGross: ytd, payday: period.payday });
+  const pay = tax.computePay(emp, currentTimeInput(), {
+    ytdGross: ytd,
+    payday: period.payday,
+    periodEnd: period.periodEnd,
+    skipDeductions: Boolean(state.time.skipDeductions)
+  });
   return { emp, hours: pay.totalHours, pay };
 }
 
@@ -1707,6 +1762,10 @@ function renderTimeclocks() {
       <div class="section-title">Estimated pay</div>
       ${stats}
       <p class="disclaimer expert-only">Federal withholding per IRS Pub 15-T (2026) Worksheet 1A. Extra federal/state is added on top of calculated tax, never a replacement. Social Security 6.2% up to $${esc(String(tax.SS_WAGE_BASE))} YTD. Medicare 1.45% (rounded up to the cent when the leftover mill is 0.4 or more). Virginia $8,750 single / $17,500 married, then VA-4 exemptions. No local VA tax. No employee VA UI.</p>
+      <label class="check-inline" style="margin:12px 0">
+        <input type="checkbox" id="tc-skip-ded"${state.time.skipDeductions ? ' checked' : ''} />
+        Skip deductions &amp; loans this payweek
+      </label>
       <p class="hint novice-only">Hours, gross, taxes, and net for this Wednesday payday. Transfer saves the week to the employee.</p>
       <div class="row-actions">
         <button class="btn btn-primary" id="tc-transfer"${calc && !archivedSelected ? '' : ' disabled'}>${isExpert() ? 'Transfer to profile' : 'Save this week’s pay'}</button>
@@ -1735,6 +1794,13 @@ function bindTimeclocks() {
   if (bankEl) {
     bankEl.addEventListener('change', () => {
       state.time.bankId = bankEl.value;
+    });
+  }
+  const skipEl = document.getElementById('tc-skip-ded');
+  if (skipEl) {
+    skipEl.addEventListener('change', () => {
+      state.time.skipDeductions = skipEl.checked;
+      render();
     });
   }
   document.querySelectorAll('[data-time-mode]').forEach((btn) => {
@@ -1846,7 +1912,10 @@ function bindTimeclocks() {
         { vacationHours: vacHrs, ptoHours: ptoHrs },
         { vacationHours: prevWeek && prevWeek.vacationHours, ptoHours: prevWeek && prevWeek.ptoHours }
       );
-      tax.applyDeductionYtd(emp, calc.pay.deductions || [], (prevWeek && prevWeek.deductions) || []);
+      const skip = Boolean(state.time.skipDeductions);
+      const newDeds = skip ? [] : calc.pay.deductions || [];
+      const prevDeds = prevWeek && !prevWeek.skipDeductions ? prevWeek.deductions || [] : [];
+      tax.applyDeductionYtd(emp, newDeds, prevDeds);
       const record = {
         periodStart: period.periodStart,
         periodEnd: period.periodEnd,
@@ -1870,10 +1939,11 @@ function bindTimeclocks() {
         stateComputed: calc.pay.stateComputed,
         stateExtra: calc.pay.stateExtra,
         pretax: calc.pay.pretax,
-        childSupport: calc.pay.childSupport,
-        garnishments: calc.pay.garnishments,
-        loans: calc.pay.loans,
-        deductions: JSON.parse(JSON.stringify(calc.pay.deductions || [])),
+        childSupport: skip ? 0 : calc.pay.childSupport,
+        garnishments: skip ? 0 : calc.pay.garnishments,
+        loans: skip ? 0 : calc.pay.loans,
+        deductions: JSON.parse(JSON.stringify(newDeds)),
+        skipDeductions: skip,
         checkNumber: String(state.time.checkNumber || '').trim(),
         bankId: String(state.time.bankId || (window.MooresBanking && window.MooresBanking.defaultBankId(state.books)) || ''),
         net: calc.pay.net,
@@ -1881,6 +1951,11 @@ function bindTimeclocks() {
       };
       if (existingIdx >= 0) emp.payweeks[existingIdx] = record;
       else emp.payweeks.push(record);
+      tax.syncDeductionYtdFromWeeks(emp, period.payday);
+      for (const n of record.deductions || []) {
+        const d = (emp.deductions || []).find((x) => x.id === n.id);
+        if (d) n.ytd = tax.round2(d.ytd);
+      }
       try {
         await persist();
         state.selectedId = emp.id;
@@ -1899,7 +1974,7 @@ function bindTimeclocks() {
             state: record.state,
             childSupport: record.childSupport,
             garnishments: record.garnishments,
-            loans: calc.pay.loans,
+            loans: skip ? 0 : calc.pay.loans,
             pretax: record.pretax,
             bankId: record.bankId,
             checkNumber: record.checkNumber
@@ -2288,6 +2363,7 @@ function allPayweeks() {
         payday: payweekPayday(w),
         periodEnd: payweekPeriodEnd(w),
         checkNumber: w.checkNumber || '',
+        skipDeductions: Boolean(w.skipDeductions),
         hours: w.hours,
         gross: w.gross,
         taxes: tax.round2((Number(w.federal) || 0) + (Number(w.ss) || 0) + (Number(w.medicare) || 0) + (Number(w.state) || 0)),
@@ -2337,7 +2413,7 @@ function renderPayroll() {
       body += g.rows
         .map(
           (r) => `<tr>
-            <td>${esc(r.name)}${r.archived ? ' <span class="badge badge-archived">Archived</span>' : ''}</td>
+            <td>${esc(r.name)}${r.archived ? ' <span class="badge badge-archived">Archived</span>' : ''}${r.skipDeductions ? ' <span class="badge">Skip deductions</span>' : ''}</td>
             <td>${esc(r.periodLabel)}</td>
             <td>${esc(r.payday || '—')}</td>
             <td><input class="check-no-input" data-check-no="${esc(r.employeeId)}|${esc(r.payday || r.periodEnd)}" value="${esc(r.checkNumber)}" placeholder="—" /></td>
@@ -2566,6 +2642,18 @@ function renderSettings() {
       <p class="hint">Payroll employees: ${esc((state.meta && (state.meta.payrollPath || state.meta.dataPath)) || '')}</p>
       <div class="row-actions">
         <button class="btn btn-secondary" id="btn-open-folder">Open data folder</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="section-title">Dev</div>
+      <p class="hint">Off (default) shows Payroll and Settings only. Shop books tabs stay hidden. Turning Dev on shows Dashboard, AR, AP, GL, Inventory, and Reports. Toggling does not delete any data.</p>
+      <div class="field" style="max-width:280px">
+        <label>Dev mode</label>
+        <select id="s-dev-mode">${optionList(['off', 'on'], isDevMode() ? 'on' : 'off', { off: 'Off (default)', on: 'On — show all tabs' })}</select>
+      </div>
+      <div class="row-actions">
+        <button class="btn btn-primary" id="btn-save-dev">Save Dev mode</button>
       </div>
     </div>
 
@@ -2890,6 +2978,21 @@ function bindSettings() {
     });
   }
 
+  const saveDev = document.getElementById('btn-save-dev');
+  if (saveDev) {
+    saveDev.addEventListener('click', async () => {
+      try {
+        const devMode = document.getElementById('s-dev-mode').value === 'on';
+        state.settings = await api.saveSettings({ devMode });
+        applyModeClass();
+        toast(devMode ? 'Dev mode on. All tabs shown. Data was not changed.' : 'Dev mode off. Payroll and Settings only. Data was not changed.', 'ok');
+        render();
+      } catch {
+        toast('Could not save Dev mode.', 'err');
+      }
+    });
+  }
+
   if (window.MooresBooksUi && window.MooresBooksUi.bindBankingSettings) {
     window.MooresBooksUi.bindBankingSettings(booksCtx());
   }
@@ -3058,6 +3161,7 @@ function bindSettings() {
 
 function render() {
   applyModeClass();
+  setNav(state.view);
   const root = document.getElementById('view-root');
   const chip = document.getElementById('enc-chip');
   if (state.meta && state.meta.encryptionAvailable) {
