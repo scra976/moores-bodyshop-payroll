@@ -196,7 +196,7 @@ function activeEmployees() {
 }
 
 function visibleEmployees() {
-  const list = sortEmployees(state.data.employees);
+  const list = sortEmployees(state.data && state.data.employees);
   if (state.showArchived) return list;
   return list.filter((e) => !isArchived(e));
 }
@@ -725,14 +725,29 @@ function renderEmployees() {
         <label class="chip"><input type="checkbox" id="emp-show-archived"${state.showArchived ? ' checked' : ''} /> Show archived${archivedCount ? ` (${archivedCount})` : ''}</label>
         <button class="btn btn-primary" data-nav="add">Add employee</button>
       </div>
-      ${isDevMode() ? '' : '<p class="hint">Shop books tabs are hidden. Settings → Dev to show them. Payroll and books data stay in AppData.</p>'}
     </div>`;
 
   if (!emp) {
+    const fileThere = Boolean(state.meta && state.meta.employeesFileExists);
+    const loadErr = state.payrollLoadError;
+    let emptyTitle = list.length
+      ? 'Select an employee to see their profile'
+      : state.showArchived
+        ? 'No employees yet'
+        : 'No active employees';
+    let emptyBody = list.length
+      ? 'Names and pay details stay hidden until you pick someone from the list.'
+      : 'Add someone to start tracking time and pay.';
+    if (!list.length && (loadErr || fileThere)) {
+      emptyTitle = 'Payroll file is on this PC but did not load into the list';
+      emptyBody = loadErr
+        ? String(loadErr)
+        : 'employees.json.enc is in %APPDATA%\\MooresBodyShop\\payroll\\. Restart the app. If the list is still empty, Settings → Import backup.';
+    }
     return `${picker}
       <div class="card empty">
-        <strong>${list.length ? 'Select an employee to see their profile' : state.showArchived ? 'No employees yet' : 'No active employees'}</strong>
-        ${list.length ? 'Names and pay details stay hidden until you pick someone from the list.' : 'Add someone to start tracking time and pay.'}
+        <strong>${esc(emptyTitle)}</strong>
+        ${esc(emptyBody)}
       </div>`;
   }
 
@@ -3213,8 +3228,14 @@ function render() {
     root.innerHTML = window.MooresBooksUi.render(booksCtx());
     window.MooresBooksUi.bind(booksCtx());
   } else if (state.view === 'employees') {
-    root.innerHTML = renderEmployees();
-    bindEmployees();
+    try {
+      root.innerHTML = renderEmployees();
+      bindEmployees();
+    } catch (err) {
+      root.innerHTML = `<div class="card empty"><strong>Could not draw the employee list.</strong> ${esc(
+        err && err.message ? err.message : 'Unknown error'
+      )} The payroll file in AppData was not deleted.</div>`;
+    }
   } else if (state.view === 'add') {
     root.innerHTML = renderAdd();
     bindAdd();
@@ -3301,7 +3322,12 @@ async function boot() {
   try {
     state.meta = await api.getMeta();
     state.settings = await api.getSettings();
-    state.data = await api.loadData();
+    const loadedPay = await api.loadData();
+    if (!loadedPay || !Array.isArray(loadedPay.employees)) {
+      throw new Error('Payroll file did not contain an employee list.');
+    }
+    state.data = loadedPay;
+    state.payrollLoadError = '';
     try {
       const loaded = await api.loadBooks();
       if (loaded && loaded.ok && loaded.books) state.books = loaded.books;
@@ -3310,17 +3336,18 @@ async function boot() {
       state.books = window.MooresBooks ? window.MooresBooks.emptyBooks() : { accounts: [], receipts: [], journal: [] };
       toast('Could not open shop books. Payroll data was not changed.', 'err');
     }
-    if (syncAllLeaveBalances()) {
-      try {
+    try {
+      if (syncAllLeaveBalances()) {
         await persist();
-      } catch {
-        /* keep working; next save will persist balances */
       }
+    } catch {
+      /* keep working; next save will persist balances */
     }
     if (!state.selectedId) state.selectedId = '';
-  } catch {
+  } catch (err) {
+    state.payrollLoadError = err && err.message ? String(err.message) : 'Could not open payroll data.';
     if (!state.data) state.data = { version: 1, company: { name: "Moore's Body Shop" }, employees: [] };
-    toast('Could not open payroll data. Check %APPDATA%\\MooresBodyShop\\payroll\\', 'err');
+    toast(state.payrollLoadError, 'err');
   } finally {
     clearTimeout(bootTimer);
     dismissBoot();

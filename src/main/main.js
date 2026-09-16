@@ -65,7 +65,15 @@ function registerIpc() {
   ipcMain.handle('app:meta', () => store.getMeta());
 
   ipcMain.handle('data:load', async () => {
-    return store.loadEmployees();
+    try {
+      const data = await store.loadEmployees();
+      return data;
+    } catch (err) {
+      const message = err && err.message ? String(err.message) : 'Could not read payroll data.';
+      const wrapped = new Error(message);
+      wrapped.code = err && err.code;
+      throw wrapped;
+    }
   });
 
   ipcMain.handle('data:save', async (_event, data) => {

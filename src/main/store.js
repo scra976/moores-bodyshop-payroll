@@ -3,6 +3,8 @@
 const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
+const crypto = require('crypto');
+const { spawnSync } = require('child_process');
 const { app, safeStorage } = require('electron');
 
 const booksEngine = require('../renderer/books');
@@ -127,6 +129,100 @@ function wrapPayload(jsonUtf8Buffer) {
   return Buffer.concat([MAGIC, Buffer.from([FLAG_PLAIN]), jsonUtf8Buffer]);
 }
 
+function findLocalStateFiles() {
+  const roots = [];
+  try {
+    roots.push(app.getPath('userData'));
+  } catch {
+    /* app not ready */
+  }
+  try {
+    roots.push(app.getPath('appData'));
+  } catch {
+    if (process.env.APPDATA) roots.push(process.env.APPDATA);
+  }
+  const found = [];
+  const seen = new Set();
+  for (const root of roots) {
+    if (!root) continue;
+    const direct = path.join(root, 'Local State');
+    if (fs.existsSync(direct) && !seen.has(direct)) {
+      seen.add(direct);
+      found.push(direct);
+    }
+    let entries = [];
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const ent of entries) {
+      if (!ent.isDirectory()) continue;
+      const p = path.join(root, ent.name, 'Local State');
+      if (fs.existsSync(p) && !seen.has(p)) {
+        seen.add(p);
+        found.push(p);
+      }
+    }
+  }
+  return found;
+}
+
+function dpapiUnprotect(buf) {
+  const b64 = Buffer.from(buf).toString('base64');
+  const ps = `
+    Add-Type -AssemblyName System.Security
+    $bytes = [Convert]::FromBase64String('${b64}')
+    $plain = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+    [Convert]::ToBase64String($plain)
+  `;
+  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
+    encoding: 'utf8',
+    windowsHide: true,
+    maxBuffer: 10 * 1024 * 1024
+  });
+  if (r.status !== 0) {
+    throw new Error((r.stderr || r.stdout || 'DPAPI failed').trim());
+  }
+  const line = String(r.stdout || '')
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .pop();
+  if (!line) throw new Error('DPAPI returned empty');
+  return Buffer.from(line, 'base64');
+}
+
+function decryptChromiumV10(aesKey, blob) {
+  if (blob.subarray(0, 3).toString() !== 'v10') throw new Error('not v10');
+  const nonce = blob.subarray(3, 15);
+  const tag = blob.subarray(blob.length - 16);
+  const data = blob.subarray(15, blob.length - 16);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', aesKey, nonce);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
+}
+
+function tryDecryptWithLocalState(body) {
+  if (!body || body.length < 20 || body.subarray(0, 3).toString() !== 'v10') return null;
+  for (const lsPath of findLocalStateFiles()) {
+    try {
+      const ls = JSON.parse(fs.readFileSync(lsPath, 'utf8'));
+      const encKeyB64 = ls && ls.os_crypt && ls.os_crypt.encrypted_key;
+      if (!encKeyB64) continue;
+      const raw = Buffer.from(encKeyB64, 'base64');
+      if (raw.subarray(0, 5).toString() !== 'DPAPI') continue;
+      const aesKey = dpapiUnprotect(raw.subarray(5));
+      const text = decryptChromiumV10(aesKey, body);
+      JSON.parse(text);
+      return text;
+    } catch {
+      /* try next Local State */
+    }
+  }
+  return null;
+}
+
 function unwrapPayload(buf) {
   if (!Buffer.isBuffer(buf)) {
     buf = Buffer.from(buf);
@@ -135,39 +231,39 @@ function unwrapPayload(buf) {
     const flag = buf[MAGIC.length];
     const body = buf.subarray(MAGIC.length + 1);
     if (flag === FLAG_ENCRYPTED) {
-      if (!encryptionAvailable()) {
-        const err = new Error(
-          'This file was encrypted on another Windows user profile and cannot be opened here.'
-        );
-        err.code = 'ENC_UNAVAILABLE';
-        throw err;
+      if (encryptionAvailable()) {
+        try {
+          return { text: safeStorage.decryptString(body), rekey: false };
+        } catch {
+          /* fall through to Local State keys from this Windows user */
+        }
       }
-      try {
-        return safeStorage.decryptString(body);
-      } catch {
-        const err = new Error(
-          'Could not decrypt this backup. Encrypted backups can only be opened by the same Windows user who created them. Use a decrypted JSON backup to move data to another PC.'
-        );
-        err.code = 'DEC_FAIL';
-        throw err;
-      }
+      const recovered = tryDecryptWithLocalState(body);
+      if (recovered) return { text: recovered, rekey: true };
+      const err = new Error(
+        'Could not read the payroll file in AppData. The file is still there. Encrypted payroll can only be opened by the same Windows user who saved it.'
+      );
+      err.code = encryptionAvailable() ? 'DEC_FAIL' : 'ENC_UNAVAILABLE';
+      throw err;
     }
-    return body.toString('utf8');
+    return { text: body.toString('utf8'), rekey: false };
   }
 
   const asText = buf.toString('utf8');
   const trimmed = asText.trimStart();
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-    return asText;
+    return { text: asText, rekey: false };
   }
 
   if (encryptionAvailable()) {
     try {
-      return safeStorage.decryptString(buf);
+      return { text: safeStorage.decryptString(buf), rekey: false };
     } catch {
       /* not a raw safeStorage blob */
     }
   }
+  const recovered = tryDecryptWithLocalState(buf);
+  if (recovered) return { text: recovered, rekey: true };
 
   const err = new Error('Unrecognized payroll data file.');
   err.code = 'BAD_FORMAT';
@@ -283,8 +379,36 @@ function parseEmployeesJson(text) {
 
 async function readEmployeesFile(filePath) {
   const buf = await fsp.readFile(filePath);
-  const text = unwrapPayload(buf);
-  return parseEmployeesJson(text);
+  const opened = unwrapPayload(buf);
+  const data = parseEmployeesJson(opened.text);
+  data.__rekey = Boolean(opened.rekey);
+  return data;
+}
+
+function existingEmployeeFiles() {
+  const out = [];
+  const seen = new Set();
+  const add = (p) => {
+    if (!p) return;
+    const full = path.resolve(p);
+    if (seen.has(full)) return;
+    try {
+      fs.accessSync(full, fs.constants.F_OK);
+    } catch {
+      return;
+    }
+    seen.add(full);
+    out.push(full);
+  };
+  add(employeesPath());
+  add(path.join(shopRoot(), 'employees.json.enc'));
+  try {
+    add(path.join(app.getPath('userData'), 'employees.json.enc'));
+    add(path.join(app.getPath('userData'), 'payroll', 'employees.json.enc'));
+  } catch {
+    /* app path */
+  }
+  return out;
 }
 
 async function tryRecoverFromBackups() {
@@ -310,24 +434,44 @@ async function tryRecoverFromBackups() {
 
 async function loadEmployees() {
   await ensureDirs();
-  const live = employeesPath();
-  try {
-    await fsp.access(live, fs.constants.F_OK);
-  } catch {
+  const candidates = existingEmployeeFiles();
+  if (!candidates.length) {
     const seeded = seedData();
     await saveEmployees(seeded);
     return seeded;
   }
 
-  try {
-    return await readEmployeesFile(live);
-  } catch {
-    const recovered = await tryRecoverFromBackups();
-    if (recovered) {
-      return recovered;
+  let lastErr = null;
+  for (const live of candidates) {
+    try {
+      const data = await readEmployeesFile(live);
+      const rekey = Boolean(data.__rekey);
+      delete data.__rekey;
+      const canonical = path.resolve(employeesPath());
+      if (rekey || path.resolve(live) !== canonical) {
+        try {
+          await saveEmployees(data);
+        } catch {
+          /* in-memory data still returned */
+        }
+      }
+      return data;
+    } catch (err) {
+      lastErr = err;
     }
-    throw new Error('Could not read the payroll database. Restore a backup from Settings.');
   }
+
+  const recovered = await tryRecoverFromBackups();
+  if (recovered) {
+    delete recovered.__rekey;
+    try {
+      await saveEmployees(recovered);
+    } catch {
+      /* still return recovered */
+    }
+    return recovered;
+  }
+  throw lastErr || new Error('Could not read the payroll database. The AppData file was not deleted.');
 }
 
 async function saveEmployees(data) {
@@ -436,6 +580,7 @@ function getMeta() {
     employeesFile: employeesPath(),
     reportsPath: reportsDir(),
     encryptionAvailable: encryptionAvailable(),
+    employeesFileExists: fs.existsSync(employeesPath()),
     companyName: "Moore's Body Shop"
   };
 }
@@ -576,7 +721,8 @@ async function exportShopPackTo(destDir) {
 
 async function importFrom(filePath, mode) {
   const buf = await fsp.readFile(filePath);
-  const incoming = parseEmployeesJson(unwrapPayload(buf));
+  const opened = unwrapPayload(buf);
+  const incoming = parseEmployeesJson(opened.text);
   let data;
   if (mode === 'replace') {
     await saveEmployees(incoming);
