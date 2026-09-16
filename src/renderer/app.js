@@ -326,6 +326,11 @@ function findEmployee(id) {
   return (state.data.employees || []).find((e) => e.id === id) || null;
 }
 
+function modalId(choice) {
+  if (choice && typeof choice === 'object') return choice.id;
+  return choice;
+}
+
 function toast(message, kind) {
   const host = document.getElementById('toasts');
   const el = document.createElement('div');
@@ -353,11 +358,12 @@ function modal({ title, body, buttons }) {
       if (card) card.classList.remove('modal-wide');
       root.removeEventListener('click', onBackdrop);
       const extra = {};
-      const bank = document.getElementById('modal-bank');
+      const bodyEl = document.getElementById('modal-body');
+      const bank = bodyEl && bodyEl.querySelector('#modal-bank');
       if (bank) extra.bankId = bank.value;
-      const chk = document.getElementById('modal-check');
+      const chk = bodyEl && bodyEl.querySelector('#modal-check');
       if (chk) extra.checkNumber = chk.value;
-      const dt = document.getElementById('modal-date');
+      const dt = bodyEl && bodyEl.querySelector('#modal-date');
       if (dt) extra.date = dt.value;
       if (value !== undefined || Object.keys(extra).length) resolve({ id, value, ...extra });
       else resolve(id);
@@ -725,6 +731,7 @@ function renderEmployees() {
         <label class="chip"><input type="checkbox" id="emp-show-archived"${state.showArchived ? ' checked' : ''} /> Show archived${archivedCount ? ` (${archivedCount})` : ''}</label>
         <button class="btn btn-primary" data-nav="add">Add employee</button>
       </div>
+      <p class="hint">Loaded ${esc(String((state.data && state.data.employees && state.data.employees.length) || 0))} employee(s) from %APPDATA%\\MooresBodyShop\\payroll\\</p>
     </div>`;
 
   if (!emp) {
@@ -2655,6 +2662,11 @@ function renderSettings() {
       <div class="section-title">Data path</div>
       <p class="hint">All shop data lives under %APPDATA%\\MooresBodyShop\\ (books, payroll, receipts, backups). Never next to the .exe. Updates replace app binaries only and do not wipe AppData.</p>
       <div class="path-box">${esc((state.meta && state.meta.shopRoot) || '')}</div>
+      <div class="row-actions">
+        <button class="btn btn-secondary" id="btn-export-pack">Export for another PC</button>
+        <button class="btn btn-secondary" id="btn-import">Import payroll backup</button>
+      </div>
+      <p class="hint">Import must be <code>employees.json</code> or a payroll <code>.enc</code> file. Books.json will not load people.</p>
       <p class="hint">Payroll employees: ${esc((state.meta && (state.meta.payrollPath || state.meta.dataPath)) || '')}</p>
       <div class="row-actions">
         <button class="btn btn-secondary" id="btn-open-folder">Open data folder</button>
@@ -3078,8 +3090,9 @@ function bindSettings() {
         { id: 'replace', label: 'Replace all', danger: true }
       ]
     });
-    if (choice !== 'merge' && choice !== 'replace') return;
-    if (choice === 'replace') {
+    const action = modalId(choice);
+    if (action !== 'merge' && action !== 'replace') return;
+    if (action === 'replace') {
       const again = await modal({
         title: 'Replace all payroll data?',
         body: 'This overwrites every employee and payweek currently in the app (automatic backups in the data folder remain).',
@@ -3088,13 +3101,15 @@ function bindSettings() {
           { id: 'replace', label: 'Replace', danger: true }
         ]
       });
-      if (again !== 'replace') return;
+      if (modalId(again) !== 'replace') return;
     }
     try {
-      const res = await api.importBackup(choice);
+      const res = await api.importBackup(action);
       if (res && res.canceled) return;
-      if (res && res.ok && res.data) {
-        state.data = res.data;
+      const pay = res && res.data && Array.isArray(res.data.employees) ? res.data : null;
+      if (res && res.ok && pay) {
+        state.data = pay;
+        state.payrollLoadError = '';
         state.selectedId = '';
         state.profileDirty = false;
         try {
@@ -3105,13 +3120,13 @@ function bindSettings() {
         }
         const extra = (res.extras || []).length ? ` Also loaded ${(res.extras || []).join(', ')}.` : '';
         toast(
-          (choice === 'replace' ? 'Database replaced from backup.' : 'Backup merged.') + extra,
+          `Loaded ${pay.employees.length} employee(s).` + extra,
           'ok'
         );
-        render();
+        navigate('employees');
         return;
       }
-      toast((res && res.message) || 'Import failed.', 'err');
+      toast((res && res.message) || 'Import failed. Pick employees.json from the payroll backup.', 'err');
     } catch {
       toast('Import failed.', 'err');
     }

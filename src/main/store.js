@@ -4,6 +4,7 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
+const os = require('os');
 const { spawnSync } = require('child_process');
 const { app, safeStorage } = require('electron');
 
@@ -13,6 +14,7 @@ const bankingEngine = require('../renderer/banking');
 const MAGIC = Buffer.from('MBSPAY01');
 const FLAG_ENCRYPTED = 0x01;
 const FLAG_PLAIN = 0x00;
+const FLAG_DPAPI = 0x02;
 const MAX_BACKUPS = 20;
 const DEFAULT_UPDATE_URL = 'https://github.com/scra976/moores-bodyshop-payroll/releases/latest/download/';
 
@@ -122,6 +124,14 @@ async function ensureDirs() {
 }
 
 function wrapPayload(jsonUtf8Buffer) {
+  try {
+    const protectedBuf = dpapiProtect(jsonUtf8Buffer);
+    if (protectedBuf && protectedBuf.length) {
+      return Buffer.concat([MAGIC, Buffer.from([FLAG_DPAPI]), protectedBuf]);
+    }
+  } catch {
+    /* fall through */
+  }
   if (encryptionAvailable()) {
     const encrypted = safeStorage.encryptString(jsonUtf8Buffer.toString('utf8'));
     return Buffer.concat([MAGIC, Buffer.from([FLAG_ENCRYPTED]), encrypted]);
@@ -168,29 +178,65 @@ function findLocalStateFiles() {
   return found;
 }
 
-function dpapiUnprotect(buf) {
-  const b64 = Buffer.from(buf).toString('base64');
+function dpapiTempPair() {
+  const dir = os.tmpdir();
+  const id = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return {
+    input: path.join(dir, `mbsp-in-${id}.bin`),
+    output: path.join(dir, `mbsp-out-${id}.bin`)
+  };
+}
+
+function psQuote(p) {
+  return `'${String(p).replace(/'/g, "''")}'`;
+}
+
+function dpapiProtect(buf) {
+  const { input, output } = dpapiTempPair();
+  fs.writeFileSync(input, buf);
   const ps = `
     Add-Type -AssemblyName System.Security
-    $bytes = [Convert]::FromBase64String('${b64}')
-    $plain = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-    [Convert]::ToBase64String($plain)
+    $plain = [System.IO.File]::ReadAllBytes(${psQuote(input)})
+    $prot = [System.Security.Cryptography.ProtectedData]::Protect($plain, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+    [System.IO.File]::WriteAllBytes(${psQuote(output)}, $prot)
   `;
   const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
-    encoding: 'utf8',
     windowsHide: true,
-    maxBuffer: 10 * 1024 * 1024
+    timeout: 15000
   });
-  if (r.status !== 0) {
-    throw new Error((r.stderr || r.stdout || 'DPAPI failed').trim());
+  try {
+    if (r.status !== 0 || !fs.existsSync(output)) {
+      throw new Error('DPAPI protect failed');
+    }
+    return fs.readFileSync(output);
+  } finally {
+    try { fs.unlinkSync(input); } catch { /* ignore */ }
+    try { fs.unlinkSync(output); } catch { /* ignore */ }
   }
-  const line = String(r.stdout || '')
-    .trim()
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .pop();
-  if (!line) throw new Error('DPAPI returned empty');
-  return Buffer.from(line, 'base64');
+}
+
+function dpapiUnprotect(buf) {
+  const { input, output } = dpapiTempPair();
+  fs.writeFileSync(input, buf);
+  const ps = `
+    Add-Type -AssemblyName System.Security
+    $prot = [System.IO.File]::ReadAllBytes(${psQuote(input)})
+    $plain = [System.Security.Cryptography.ProtectedData]::Unprotect($prot, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+    [System.IO.File]::WriteAllBytes(${psQuote(output)}, $plain)
+  `;
+  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
+    windowsHide: true,
+    timeout: 15000
+  });
+  try {
+    if (r.status !== 0 || !fs.existsSync(output)) {
+      throw new Error('DPAPI unprotect failed');
+    }
+    return fs.readFileSync(output);
+  } finally {
+    try { fs.unlinkSync(input); } catch { /* */ }
+    try { fs.unlinkSync(output); } catch { /* */ }
+  }
 }
 
 function decryptChromiumV10(aesKey, blob) {
@@ -230,6 +276,17 @@ function unwrapPayload(buf) {
   if (buf.length >= MAGIC.length + 1 && buf.subarray(0, MAGIC.length).equals(MAGIC)) {
     const flag = buf[MAGIC.length];
     const body = buf.subarray(MAGIC.length + 1);
+    if (flag === FLAG_DPAPI) {
+      try {
+        return { text: dpapiUnprotect(body).toString('utf8'), rekey: false };
+      } catch {
+        const err = new Error(
+          'Could not open the payroll file for this Windows user. The file is still in AppData.'
+        );
+        err.code = 'DEC_FAIL';
+        throw err;
+      }
+    }
     if (flag === FLAG_ENCRYPTED) {
       if (encryptionAvailable()) {
         try {
@@ -240,6 +297,11 @@ function unwrapPayload(buf) {
       }
       const recovered = tryDecryptWithLocalState(body);
       if (recovered) return { text: recovered, rekey: true };
+      try {
+        return { text: dpapiUnprotect(body).toString('utf8'), rekey: true };
+      } catch {
+        /* not raw DPAPI either */
+      }
       const err = new Error(
         'Could not read the payroll file in AppData. The file is still there. Encrypted payroll can only be opened by the same Windows user who saved it.'
       );
@@ -367,8 +429,10 @@ function parseEmployeesJson(text) {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('Payroll file is not a valid database object.');
   }
-  if (!Array.isArray(parsed.employees)) {
-    parsed.employees = [];
+  if (!Object.prototype.hasOwnProperty.call(parsed, 'employees') || !Array.isArray(parsed.employees)) {
+    throw new Error(
+      'This file is not a payroll backup. Choose employees.json or a .enc payroll file — not books.json or settings.json.'
+    );
   }
   if (!parsed.company || typeof parsed.company !== 'object') {
     parsed.company = { name: "Moore's Body Shop", address: { ...DEFAULT_ADDRESS } };
@@ -401,12 +465,32 @@ function existingEmployeeFiles() {
     out.push(full);
   };
   add(employeesPath());
+  add(path.join(dataRoot(), 'employees.json'));
   add(path.join(shopRoot(), 'employees.json.enc'));
+  add(path.join(shopRoot(), 'employees.json'));
   try {
     add(path.join(app.getPath('userData'), 'employees.json.enc'));
     add(path.join(app.getPath('userData'), 'payroll', 'employees.json.enc'));
+    add(path.join(app.getPath('userData'), 'payroll', 'employees.json'));
   } catch {
     /* app path */
+  }
+  try {
+    const local = process.env.LOCALAPPDATA;
+    if (local) {
+      add(path.join(local, 'MooresBodyShop', 'payroll', 'employees.json.enc'));
+      add(path.join(local, 'MooresBodyShop', 'payroll', 'employees.json'));
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    const names = fs.readdirSync(backupsDir());
+    for (const name of names) {
+      if (/^employees-.*\.(json|enc)$/i.test(name)) add(path.join(backupsDir(), name));
+    }
+  } catch {
+    /* no backups yet */
   }
   return out;
 }
@@ -437,49 +521,59 @@ async function loadEmployees() {
   const candidates = existingEmployeeFiles();
   if (!candidates.length) {
     const seeded = seedData();
-    await saveEmployees(seeded);
+    await saveEmployees(seeded, { allowEmpty: true });
     return seeded;
   }
 
+  const loaded = [];
   let lastErr = null;
   for (const live of candidates) {
     try {
       const data = await readEmployeesFile(live);
       const rekey = Boolean(data.__rekey);
       delete data.__rekey;
-      const canonical = path.resolve(employeesPath());
-      if (rekey || path.resolve(live) !== canonical) {
-        try {
-          await saveEmployees(data);
-        } catch {
-          /* in-memory data still returned */
-        }
-      }
-      return data;
+      loaded.push({
+        file: live,
+        data,
+        rekey,
+        n: Array.isArray(data.employees) ? data.employees.length : 0
+      });
     } catch (err) {
       lastErr = err;
     }
   }
-
-  const recovered = await tryRecoverFromBackups();
-  if (recovered) {
-    delete recovered.__rekey;
-    try {
-      await saveEmployees(recovered);
-    } catch {
-      /* still return recovered */
-    }
-    return recovered;
+  if (!loaded.length) {
+    throw lastErr || new Error('Could not read the payroll database. The AppData file was not deleted.');
   }
-  throw lastErr || new Error('Could not read the payroll database. The AppData file was not deleted.');
+  loaded.sort((a, b) => b.n - a.n);
+  const best = loaded[0];
+  const canonical = path.resolve(employeesPath());
+  if (best.n > 0 && (best.rekey || path.resolve(best.file) !== canonical)) {
+    try {
+      await saveEmployees(best.data);
+    } catch {
+      /* still return in-memory */
+    }
+  }
+  return best.data;
 }
 
-async function saveEmployees(data) {
+async function saveEmployees(data, opts) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) {
     throw new Error('Invalid payroll payload.');
   }
   if (!Array.isArray(data.employees)) {
     throw new Error('Invalid payroll payload.');
+  }
+  if (!data.employees.length && !(opts && opts.allowEmpty)) {
+    try {
+      const current = await readEmployeesFile(employeesPath());
+      if (current && Array.isArray(current.employees) && current.employees.length) {
+        throw new Error('Refusing to overwrite payroll with an empty employee list.');
+      }
+    } catch (err) {
+      if (err && /Refusing to overwrite/.test(err.message)) throw err;
+    }
   }
   await ensureDirs();
   const json = Buffer.from(JSON.stringify(data), 'utf8');
@@ -723,6 +817,9 @@ async function importFrom(filePath, mode) {
   const buf = await fsp.readFile(filePath);
   const opened = unwrapPayload(buf);
   const incoming = parseEmployeesJson(opened.text);
+  if (!incoming.employees.length) {
+    throw new Error('That backup has no employees in it. Pick the employees.json payroll file.');
+  }
   let data;
   if (mode === 'replace') {
     await saveEmployees(incoming);
