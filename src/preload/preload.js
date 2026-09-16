@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('mooresPayroll', {
   openPub15t: () => ipcRenderer.invoke('app:openPub15t'),
   exportEncrypted: () => ipcRenderer.invoke('data:exportEncrypted'),
   exportDecrypted: () => ipcRenderer.invoke('data:exportDecrypted'),
+  exportShopPack: () => ipcRenderer.invoke('data:exportShopPack'),
   importBackup: (mode) => ipcRenderer.invoke('data:import', mode),
   checkForUpdates: () => ipcRenderer.invoke('update:check'),
   downloadUpdate: () => ipcRenderer.invoke('update:download'),

@@ -150,6 +150,22 @@ function registerIpc() {
     return { ok: true, path: choice.filePath };
   });
 
+  ipcMain.handle('data:exportShopPack', async () => {
+    const win = BrowserWindow.getFocusedWindow() || mainWindow;
+    const stamp = new Date().toISOString().slice(0, 10);
+    const choice = await dialog.showOpenDialog(win, {
+      title: 'Choose a folder for the other-PC pack',
+      properties: ['openDirectory', 'createDirectory'],
+      defaultPath: app.getPath('desktop')
+    });
+    if (choice.canceled || !choice.filePaths || !choice.filePaths[0]) {
+      return { ok: false, canceled: true };
+    }
+    const destDir = path.join(choice.filePaths[0], `MooresBodyShop-move-${stamp}`);
+    const result = await store.exportShopPackTo(destDir);
+    return { ok: true, path: result.destDir, copied: result.copied };
+  });
+
   ipcMain.handle('data:import', async (_event, mode) => {
     const win = BrowserWindow.getFocusedWindow() || mainWindow;
     const choice = await dialog.showOpenDialog(win, {
@@ -165,8 +181,9 @@ function registerIpc() {
     }
     const useMode = mode === 'replace' ? 'replace' : 'merge';
     try {
-      const data = await store.importFrom(choice.filePaths[0], useMode);
-      return { ok: true, data };
+      const imported = await store.importFrom(choice.filePaths[0], useMode);
+      const data = imported && imported.data ? imported.data : imported;
+      return { ok: true, data, extras: (imported && imported.extras) || [] };
     } catch (err) {
       const message = err && err.message ? String(err.message) : 'Import failed.';
       return { ok: false, message };

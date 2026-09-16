@@ -2749,9 +2749,10 @@ function renderPayrollSettings() {
         <button class="btn btn-secondary" id="btn-open-payroll-folder">Open payroll folder</button>
         <button class="btn btn-secondary" id="btn-export-enc">Export encrypted backup</button>
         <button class="btn btn-secondary" id="btn-export-json">Export decrypted JSON backup</button>
+        <button class="btn btn-secondary" id="btn-export-pack">Export for another PC</button>
         <button class="btn btn-secondary" id="btn-import">Import backup</button>
       </div>
-      <p class="hint" style="margin-top:12px">Encrypted backups can only be opened by the same Windows user. Use decrypted JSON to move the shop to another PC — that file contains SSNs.</p>
+      <p class="hint" style="margin-top:12px">GitHub updates never copy shop data. Encrypted backups only open on this Windows user. To move to another PC, use <strong>Export for another PC</strong>, copy that folder, then Import backup → Replace → pick <code>employees.json</code>. Books files next to it are imported too. That JSON contains SSNs — keep it private.</p>
     </div>
 
     <div class="card">
@@ -3028,6 +3029,29 @@ function bindSettings() {
     }
   });
 
+  const exportPack = document.getElementById('btn-export-pack');
+  if (exportPack) {
+    exportPack.addEventListener('click', async () => {
+      const choice = await modal({
+        title: 'Export for another PC?',
+        body: 'Writes a folder with decrypted employees.json plus books files. Anyone with the folder can read SSNs. Copy it on a private USB or drive, then Import on the other PC.',
+        buttons: [
+          { id: 'cancel', label: 'Cancel' },
+          { id: 'export', label: 'Choose folder', danger: true }
+        ]
+      });
+      if (choice !== 'export') return;
+      try {
+        const res = await api.exportShopPack();
+        if (res && res.canceled) return;
+        if (res && res.ok) toast(`Pack saved: ${res.path}`, 'ok');
+        else toast((res && res.message) || 'Export failed.', 'err');
+      } catch {
+        toast('Export failed.', 'err');
+      }
+    });
+  }
+
   const importBtn = document.getElementById('btn-import');
   if (importBtn) importBtn.addEventListener('click', async () => {
     const choice = await modal({
@@ -3058,7 +3082,17 @@ function bindSettings() {
         state.data = res.data;
         state.selectedId = '';
         state.profileDirty = false;
-        toast(choice === 'replace' ? 'Database replaced from backup.' : 'Backup merged.', 'ok');
+        try {
+          const loaded = await api.loadBooks();
+          if (loaded && loaded.ok && loaded.books) state.books = loaded.books;
+        } catch {
+          /* payroll import still succeeded */
+        }
+        const extra = (res.extras || []).length ? ` Also loaded ${(res.extras || []).join(', ')}.` : '';
+        toast(
+          (choice === 'replace' ? 'Database replaced from backup.' : 'Backup merged.') + extra,
+          'ok'
+        );
         render();
         return;
       }

@@ -512,28 +512,93 @@ async function exportDecryptedTo(destPath) {
   await atomicWrite(destPath, buf);
 }
 
+async function importSidecarShopFiles(dir) {
+  const extras = [];
+  const booksSrc = path.join(dir, 'books.json');
+  try {
+    await fsp.access(booksSrc, fs.constants.F_OK);
+    const parsed = JSON.parse(await fsp.readFile(booksSrc, 'utf8'));
+    await saveBooks(parsed);
+    extras.push('books');
+  } catch {
+    /* optional */
+  }
+  const banksSrc = path.join(dir, 'banks.json');
+  try {
+    await fsp.access(banksSrc, fs.constants.F_OK);
+    const dest = banksPath();
+    await ensureDirs();
+    await fsp.copyFile(banksSrc, dest);
+    extras.push('banks');
+  } catch {
+    /* optional */
+  }
+  const receiptsSrc = path.join(dir, 'receipts.json');
+  try {
+    await fsp.access(receiptsSrc, fs.constants.F_OK);
+    await ensureDirs();
+    await fsp.copyFile(receiptsSrc, receiptsIndexPath());
+    extras.push('receipts');
+  } catch {
+    /* optional */
+  }
+  return extras;
+}
+
+async function exportShopPackTo(destDir) {
+  await ensureDirs();
+  await fsp.mkdir(destDir, { recursive: true });
+  await exportDecryptedTo(path.join(destDir, 'employees.json'));
+  const copied = ['employees.json'];
+  const pairs = [
+    [booksPath(), 'books.json'],
+    [banksPath(), 'banks.json'],
+    [receiptsIndexPath(), 'receipts.json']
+  ];
+  for (const [src, name] of pairs) {
+    try {
+      await fsp.access(src, fs.constants.F_OK);
+      await fsp.copyFile(src, path.join(destDir, name));
+      copied.push(name);
+    } catch {
+      /* skip missing */
+    }
+  }
+  const note =
+    "Moore's Body Shop portable pack\n\n" +
+    'employees.json is decrypted (includes SSNs). Keep it private.\n' +
+    'On the other PC: Settings → Import backup → Replace → pick employees.json.\n' +
+    'Books files in this folder are imported automatically when they sit next to employees.json.\n' +
+    'GitHub updates never copy shop data.\n';
+  await fsp.writeFile(path.join(destDir, 'HOW-TO-IMPORT.txt'), note, 'utf8');
+  return { destDir, copied };
+}
+
 async function importFrom(filePath, mode) {
   const buf = await fsp.readFile(filePath);
   const incoming = parseEmployeesJson(unwrapPayload(buf));
+  let data;
   if (mode === 'replace') {
     await saveEmployees(incoming);
-    return incoming;
+    data = incoming;
+  } else {
+    const current = await loadEmployees();
+    const byId = new Map(current.employees.map((e) => [e.id, e]));
+    for (const emp of incoming.employees) {
+      if (!emp || !emp.id) continue;
+      byId.set(emp.id, emp);
+    }
+    const merged = {
+      ...current,
+      ...incoming,
+      company: incoming.company || current.company,
+      employees: Array.from(byId.values())
+    };
+    await saveEmployees(merged);
+    data = merged;
   }
-
-  const current = await loadEmployees();
-  const byId = new Map(current.employees.map((e) => [e.id, e]));
-  for (const emp of incoming.employees) {
-    if (!emp || !emp.id) continue;
-    byId.set(emp.id, emp);
-  }
-  const merged = {
-    ...current,
-    ...incoming,
-    company: incoming.company || current.company,
-    employees: Array.from(byId.values())
-  };
-  await saveEmployees(merged);
-  return merged;
+  const extras = await importSidecarShopFiles(path.dirname(filePath));
+  return { data, extras };
 }
 
 async function writeShopBackup(books) {
@@ -751,6 +816,7 @@ module.exports = {
   getMeta,
   exportEncryptedTo,
   exportDecryptedTo,
+  exportShopPackTo,
   importFrom,
   wrapPayload,
   unwrapPayload
